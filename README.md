@@ -2,14 +2,17 @@
 
 macOS menu bar tray for Grok / DeepSeek token usage, Claude provider activate, and local `claude-code-proxy` control.
 
+**Companion to CC Switch** — this tray **reads provider data from CC Switch** (`~/.cc-switch/cc-switch.db` and related settings). It does not re-enter API keys in the tray UI: providers, DeepSeek keys, and Activate targets come from what you already configured in CC Switch / `ccs`.
+
 | At a glance | |
 | --- | --- |
 | Menu bar (Grok) | Icon + `weekly% / monthly%` (e.g. `88% / 59%`) |
 | Menu bar (DeepSeek) | Whale icon + prepaid balance (e.g. `$28`) |
 | Panel | Expand Grok / DeepSeek rows for detail and actions |
 | Poll | Every **20s** in background; every **5s** while the panel is open |
+| Config source | **CC Switch** providers + keys; Grok CLI auth from **`grok login`** |
 
-No separate secret store for API keys: DeepSeek keys come from **CC Switch**; Grok usage uses **`grok login`** (`~/.grok/auth.json`).
+No separate secret store in this app: DeepSeek keys and Claude provider definitions are **read from CC Switch**; Grok usage uses **`grok login`** (`~/.grok/auth.json`).
 
 ---
 
@@ -18,12 +21,21 @@ No separate secret store for API keys: DeepSeek keys come from **CC Switch**; Gr
 ### Launch
 
 ```bash
-open ~/Applications/GM\ Tray.app
-# or
-open /Applications/GM\ Tray.app
+open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
+# or (after build installs the helper)
+gm-tray
+# or system-wide install
+open "/Applications/Claude-Code-Proxy Token Monitor Tray.app"
 ```
 
 Look in the **menu bar** (top-right). There is **no Dock icon**. Click the icon to open the panel (fades in/out).
+
+If macOS says the app can’t be opened (local/ad-hoc build):
+
+```bash
+xattr -cr "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
+open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
+```
 
 | Action | How |
 | --- | --- |
@@ -108,15 +120,18 @@ Restart Claude Code after **Activate**.
 
 ### Data locations (companion model)
 
+This app is a **read/write companion** to CC Switch — it does not replace it.
+
 | Path | Role |
 | --- | --- |
-| `~/.grok/auth.json` | Active Grok CLI login (usage token) |
-| `~/.grok/profiles/*.json` | Saved logins for account switch |
-| `~/.cc-switch/cc-switch.db` | Claude providers + DeepSeek key |
-| `~/.claude/settings.json` | Live Claude Code env (written on **Activate**) |
-| UserDefaults | Per-email subscription renew anchors, launch-at-login |
+| `~/.cc-switch/cc-switch.db` | **Read** (and update on Activate): Claude providers, which is active, DeepSeek API key |
+| `~/.cc-switch/settings.json` | CC Switch app settings (if present) |
+| `~/.claude/settings.json` | Live Claude Code env (**written** when you **Activate** a provider) |
+| `~/.grok/auth.json` | Active Grok CLI login (usage token; not from CC Switch) |
+| `~/.grok/profiles/*.json` | Saved Grok logins for multi-account switch in the tray |
+| UserDefaults | Per-email SuperGrok renew anchors, launch-at-login |
 
-Different Mac users each use their own `$HOME`; the app does not invent a custom CC Switch path.
+Different Mac users each use their own `$HOME`; the tray always uses the standard CC Switch path under that home (no custom DB path UI).
 
 ---
 
@@ -129,13 +144,16 @@ xcode-select -p || xcode-select --install
 cd /path/to/gm-tray
 ./Scripts/build-app.sh
 # → ~/Applications/Claude-Code-Proxy Token Monitor Tray.app
-open ~/Applications/GM\ Tray.app
+#    + ~/.local/bin/gm-tray launcher
+open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
+# or: gm-tray
 ```
 
 System-wide:
 
 ```bash
 ./Scripts/build-app.sh "/Applications"
+open "/Applications/Claude-Code-Proxy Token Monitor Tray.app"
 ```
 
 ### Share a prebuilt zip
@@ -163,8 +181,8 @@ Login items work best from an installed `.app`, not bare `swift run`.
 | --- | --- |
 | macOS 13+ | MenuBarExtra |
 | Grok usage | `grok login` |
-| DeepSeek balance | DeepSeek provider in CC Switch (or key in env / Claude settings) |
-| Activate Claude provider | CC Switch data under `~/.cc-switch` |
+| DeepSeek balance | DeepSeek provider **in CC Switch** (tray reads the key from `cc-switch.db`; or key in env / Claude settings) |
+| Activate Claude provider | Providers defined in CC Switch (`~/.cc-switch`) — tray reads them, then writes `~/.claude/settings.json` |
 | Launch proxy | `brew install claude-code-proxy` |
 
 ---
@@ -192,7 +210,8 @@ The tray does not require `ccs` for proxy launch/stop; it calls `claude-code-pro
 | DeepSeek error | Add DeepSeek provider in CC Switch with API key |
 | Activate did nothing in Claude | Restart Claude Code |
 | Proxy Launch fails | Install `claude-code-proxy` via Homebrew; check `~/Library/Logs/ClaudeCodeProxyTokenMonitorTray/claude-code-proxy.log` |
-| App blocked after download | Right-click → Open, or clear quarantine with `xattr` |
+| App blocked / “cannot open” | `xattr -cr "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"` then `open` again; or right-click → Open |
+| Still no process | `open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"` or run the binary: `"$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app/Contents/MacOS/GMTray"` |
 
 ---
 
