@@ -1,5 +1,8 @@
 # Claude-Code-Proxy Token Monitor Tray
 
+<img width="700" alt="image" src="https://github.com/user-attachments/assets/4ffdb5f4-9aad-40e2-a164-b3bc9d56244a" />
+
+
 macOS menu bar tray for Grok / DeepSeek token usage, Claude provider activate, and local `claude-code-proxy` control.
 
 **Companion to CC Switch** — this tray **reads provider data from CC Switch** (`~/.cc-switch/cc-switch.db` and related settings). It does not re-enter API keys in the tray UI: providers, DeepSeek keys, and Activate targets come from what you already configured in CC Switch / `ccs`.
