@@ -1,0 +1,49 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode (if you ever open Package.swift as a project)
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Build / packaging artifacts from Scripts/build-app.sh
+*.app/
+AppIcon.iconset/
+*.icns
+*.dSYM/
+*.o
+*.dylib
+
+# Archives / release zips you might generate locally
+*.zip
+dist/
+release/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+.history/
+
+# Env / secrets (never commit)
+.env
+.env.*
+*.pem
+*.p12
+auth.json
+**/secrets/
