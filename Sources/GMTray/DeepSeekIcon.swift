@@ -44,10 +44,16 @@ enum DeepSeekIcon {
     }
 
     private static func resourceURL(name: String, ext: String) -> URL? {
-        if let url = Bundle.module.url(forResource: name, withExtension: ext) {
+        // Prefer Bundle.main (packaged .app). Avoid relying on Bundle.module alone —
+        // SPM looks for GMTray_GMTray.bundle at the .app root, which breaks codesign.
+        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
             return url
         }
-        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
+        if let res = Bundle.main.resourceURL {
+            let nested = res.appendingPathComponent("GMTray_GMTray.bundle/\(name).\(ext)")
+            if FileManager.default.fileExists(atPath: nested.path) { return nested }
+        }
+        if let url = Bundle.module.url(forResource: name, withExtension: ext) {
             return url
         }
 
@@ -62,6 +68,8 @@ enum DeepSeekIcon {
         let relative = [
             "GMTray_GMTray.bundle/\(name).\(ext)",
             "Contents/Resources/\(name).\(ext)",
+            "Contents/Resources/GMTray_GMTray.bundle/\(name).\(ext)",
+            "Contents/MacOS/GMTray_GMTray.bundle/\(name).\(ext)",
             "Resources/\(name).\(ext)",
             "\(name).\(ext)",
         ]

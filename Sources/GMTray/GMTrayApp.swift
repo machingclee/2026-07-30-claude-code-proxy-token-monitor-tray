@@ -14,22 +14,11 @@ struct GMTrayApp: App {
         MenuBarExtra {
             ContentView(model: model)
         } label: {
-            // Icon follows active CC Switch provider (DeepSeek → whale, Grok → Grok mark).
-            HStack(spacing: 2) {
-                Image(nsImage: model.menuBarIcon)
-                    .renderingMode(.template)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 14, height: 14)
-                // Menu bar metrics: keep small — system bar often ignores large body fonts.
-                Text(model.menuBarTitle)
-                    .font(.system(size: 9, weight: .regular, design: .rounded))
-                    .monospacedDigit()
-                    .baselineOffset(-0.5)
-                    .scaleEffect(0.85, anchor: .leading)
-                    .padding(.trailing, -2)
-            }
-            .fixedSize()
+            // Composite label image: icon + weekly/monthly (or single metric).
+            // Drawing text in SwiftUI VStack is unreliable inside MenuBarExtra.
+            Image(nsImage: model.menuBarCompositeImage)
+                .renderingMode(.template)
+                .interpolation(.high)
         }
         .menuBarExtraStyle(.window)
     }

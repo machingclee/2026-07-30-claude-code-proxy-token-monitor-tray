@@ -60,8 +60,20 @@ enum UsageService {
             remainingLabel(until: weeklyEnd)
         }
 
+        var monthlyRemainingLabel: String {
+            remainingLabel(until: monthlyEnd)
+        }
+
         var menuBarTitle: String {
             String(format: "%.0f%%", weeklyPercent)
+        }
+
+        /// Monthly usage as a percent string for the tray (calendar window).
+        var menuBarMonthlyTitle: String {
+            if let pct = monthlyPercent {
+                return String(format: "%.0f%%", pct)
+            }
+            return "—"
         }
     }
 
@@ -256,7 +268,8 @@ enum UsageService {
     static func formatDate(_ date: Date?) -> String {
         guard let date else { return "?" }
         let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd HH:mm z"
+        // Local wall-clock time only — no zone abbreviation (e.g. HKT).
+        f.dateFormat = "yyyy-MM-dd HH:mm"
         f.timeZone = .current
         return f.string(from: date)
     }

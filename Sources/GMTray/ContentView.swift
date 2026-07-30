@@ -5,9 +5,11 @@ struct ContentView: View {
     @ObservedObject var model: UsageViewModel
     /// Sections start collapsed; click a row to expand (multiple allowed).
     @State private var expandedIds: Set<String> = []
+    /// Subscription renew editor shown only after Update.
+    @State private var editingSubscriptionRenew = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             header
             Divider()
 
@@ -16,7 +18,7 @@ struct ContentView: View {
                 && model.isLoading {
                 HStack {
                     ProgressView()
-                        .controlSize(.small)
+                        .controlSize(.regular)
                     Text("Loading usage…")
                         .foregroundStyle(.secondary)
                 }
@@ -30,11 +32,13 @@ struct ContentView: View {
                     error: model.grokError,
                     provider: model.provider(for: .grok)
                 ) {
+                    // Account switch first, then usage (weekly / monthly).
+                    grokAccountsSection
                     if let snap = model.grok {
                         weeklySection(snap)
                         monthlySection(snap)
                     } else if model.grokError == nil {
-                        Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                        Text("Loading…").font(.body).foregroundStyle(.secondary)
                     }
                 }
 
@@ -49,14 +53,14 @@ struct ContentView: View {
                     if let snap = model.deepseek {
                         deepseekSection(snap)
                     } else if model.deepseekError == nil {
-                        Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                        Text("Loading…").font(.body).foregroundStyle(.secondary)
                     }
                 }
             }
 
             if let msg = model.switchMessage {
                 Text(msg)
-                    .font(.caption2)
+                    .font(.body)
                     .foregroundStyle(
                         msg.contains("Activated") || msg.contains("Already")
                             ? Color.secondary : Color.orange
@@ -66,7 +70,7 @@ struct ContentView: View {
 
             if let err = model.providersError {
                 Text(err)
-                    .font(.caption2)
+                    .font(.body)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -76,8 +80,8 @@ struct ContentView: View {
             Divider()
             footer
         }
-        .padding(14)
-        .frame(width: 360)
+        .padding(16)
+        .frame(width: 420)
         .menuBarPanelFade(fadeIn: 0.18, fadeOut: 0.22)
         .onAppear { model.setPanelOpen(true) }
         .onDisappear { model.setPanelOpen(false) }
@@ -88,16 +92,16 @@ struct ContentView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Usage Monitor")
-                    .font(.headline)
-                Text("CC Switch companion · no separate key store")
-                    .font(.caption2)
+                Text("Claude-Code-Proxy Token Monitor")
+                    .font(.title3.weight(.semibold))
+                Text("Grok · DeepSeek · local proxy")
+                    .font(.body)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             if model.isLoading || model.isSwitching || model.isLaunchingProxy {
                 ProgressView()
-                    .controlSize(.small)
+                    .controlSize(.regular)
             }
         }
     }
@@ -107,9 +111,9 @@ struct ContentView: View {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Launch at login")
-                        .font(.caption.weight(.medium))
-                    Text("Start GM Tray when you log in to macOS")
-                        .font(.caption2)
+                        .font(.body.weight(.medium))
+                    Text("Start this tray when you log in to macOS")
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
@@ -119,13 +123,13 @@ struct ContentView: View {
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .controlSize(.small)
-                .help("Launch GM Tray when you log in to macOS")
+                .controlSize(.regular)
+                .help("Launch Claude-Code-Proxy Token Monitor Tray at login")
             }
 
             if let msg = model.loginItemMessage {
                 Text(msg)
-                    .font(.caption2)
+                    .font(.body)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -136,7 +140,7 @@ struct ContentView: View {
         HStack {
             if let t = model.lastRefresh {
                 Text("Updated \(timeAgo(t))")
-                    .font(.caption2)
+                    .font(.body)
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -172,21 +176,22 @@ struct ContentView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .frame(width: 10)
+                        .frame(width: 12)
 
                     providerIcon(icon)
-                        .frame(width: 14, height: 14)
+                        .frame(width: 16, height: 16)
 
                     Text(title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.title3)
+                        .fontWeight(.regular)
                         .foregroundStyle(.primary)
 
                     if provider?.isCurrent == true {
                         Text("active")
-                            .font(.caption2)
+                            .font(.body)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(Color.accentColor.opacity(0.15))
@@ -198,7 +203,7 @@ struct ContentView: View {
 
                     if !expanded {
                         Text(summary)
-                            .font(.caption.monospacedDigit())
+                            .font(.body.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -222,7 +227,7 @@ struct ContentView: View {
 
                 if let error {
                     Text(error)
-                        .font(.caption2)
+                        .font(.body)
                         .foregroundStyle(.orange)
                         .lineLimit(4)
                         .padding(.leading, 4)
@@ -233,7 +238,7 @@ struct ContentView: View {
                     .padding(.leading, 4)
             } else if let error {
                 Text(error)
-                    .font(.caption2)
+                    .font(.body)
                     .foregroundStyle(.orange)
                     .lineLimit(1)
                     .padding(.leading, 20)
@@ -254,7 +259,7 @@ struct ContentView: View {
                             .foregroundStyle(Color.accentColor)
                             .imageScale(.small)
                         Text("Active in ~/.claude/settings.json")
-                            .font(.caption2)
+                            .font(.body)
                             .foregroundStyle(.secondary)
                     }
                 } else {
@@ -265,17 +270,17 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .disabled(model.isSwitching)
                     .help("Write \(provider.name) into ~/.claude/settings.json (CC Switch)")
                 }
             } else {
                 Text("No matching CC Switch provider")
-                    .font(.caption2)
+                    .font(.body)
                     .foregroundStyle(.tertiary)
             }
 
-            // Grok-only: Launch when :18765 is free, Stop when listening.
+            // Grok-only: proxy controls (account switch lives above Weekly).
             if kind == .grok {
                 if model.isProxyRunning {
                     Button {
@@ -285,7 +290,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .disabled(model.isLaunchingProxy || model.isSwitching)
                     .help("Port 18765 is in use — stop listeners (SIGTERM)")
                 } else {
@@ -296,11 +301,76 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .disabled(model.isLaunchingProxy || model.isSwitching)
                     .help("Run: claude-code-proxy serve --no-monitor (brew install claude-code-proxy)")
                 }
             }
+        }
+    }
+
+    private var grokAccountsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Grok accounts")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            if model.grokProfiles.isEmpty {
+                Text("No saved profiles yet. Save the current login, then grok login as the other account and Save again.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(model.grokProfiles) { p in
+                    HStack(spacing: 6) {
+                        Text(p.email)
+                            .font(.body)
+                            .lineLimit(1)
+                        if p.isActive {
+                            Text("active")
+                                .font(.body)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.accentColor.opacity(0.15))
+                                .foregroundStyle(Color.accentColor)
+                                .clipShape(Capsule())
+                        }
+                        Spacer(minLength: 4)
+                        if p.isActive {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(Color.accentColor)
+                                .symbolRenderingMode(.hierarchical)
+                        } else if p.id != "__active__" {
+                            Button("Switch") {
+                                model.switchGrokAccount(profileId: p.id)
+                            }
+                            .controlSize(.regular)
+                            .disabled(model.isSwitchingGrokAccount)
+                        }
+                    }
+                }
+            }
+
+            Button {
+                model.saveCurrentGrokAccount()
+            } label: {
+                Text("Save current login as profile")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .padding(.top, 8)
+            .help("Copy ~/.grok/auth.json → ~/.grok/profiles/<email>.json")
+
+            if let msg = model.grokAccountMessage {
+                Text(msg)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider().padding(.vertical, 4)
         }
     }
 
@@ -339,7 +409,7 @@ struct ContentView: View {
     private func weeklySection(_ snap: UsageService.Snapshot) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Weekly")
-                .font(.caption.weight(.medium))
+                .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
             usageBar(percent: snap.weeklyPercent)
             row("Left", String(format: "~%.1f%%", snap.weeklyLeft))
@@ -350,7 +420,7 @@ struct ContentView: View {
                 }
             }
             Text(snap.source)
-                .font(.caption2)
+                .font(.body)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
         }
@@ -358,21 +428,86 @@ struct ContentView: View {
 
     private func monthlySection(_ snap: UsageService.Snapshot) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Monthly")
-                .font(.caption.weight(.medium))
+            Text("Monthly usage (API calendar window)")
+                .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
             if let used = snap.monthlyUsed, let limit = snap.monthlyLimit {
                 let pct = snap.monthlyPercent ?? 0
                 Text(String(format: "%.0f / %.0f", used, limit))
-                    .font(.caption.monospacedDigit())
+                    .font(.body.monospacedDigit())
                     .foregroundStyle(.secondary)
                 usageBar(percent: pct)
             } else {
                 Text("No monthly data")
-                    .font(.caption)
+                    .font(.body)
                     .foregroundStyle(.secondary)
             }
+            // Calendar usage window from CLI API — not SuperGrok card renew day.
+            row("Period", "\(UsageService.formatDate(snap.monthlyStart)) → \(UsageService.formatDate(snap.monthlyEnd))")
+            row(
+                "Period ends",
+                "\(UsageService.formatDate(snap.monthlyEnd))  (in \(snap.monthlyRemainingLabel))"
+            )
+
+            Text("Subscription renew")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
+
+            HStack(alignment: .center, spacing: 8) {
+                Text("Next renew")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 110, alignment: .leading)
+                if let next = model.subscriptionNextRenew {
+                    Text("\(SubscriptionRenewStore.formatDay(next))  (in \(model.subscriptionRenewRemainingLabel))")
+                        .font(.body.monospacedDigit())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                } else {
+                    Text("Not set")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Button("Update") {
+                    model.reloadSubscriptionRenew()
+                    editingSubscriptionRenew = true
+                }
+                .controlSize(.regular)
+            }
+
+            if editingSubscriptionRenew {
+                HStack(spacing: 6) {
+                    TextField("yyyy-MM-dd", text: $model.subscriptionRenewDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(maxWidth: 140)
+                        .onSubmit {
+                            model.saveSubscriptionRenewDate()
+                            editingSubscriptionRenew = false
+                        }
+                    Button("Save") {
+                        model.saveSubscriptionRenewDate()
+                        editingSubscriptionRenew = false
+                    }
+                    .controlSize(.regular)
+                    Button("Clear") {
+                        model.clearSubscriptionRenewDate()
+                        editingSubscriptionRenew = false
+                    }
+                    .controlSize(.regular)
+                }
+            }
+            if let msg = model.subscriptionRenewMessage {
+                Text(msg)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: model.activeGrokEmail) { _ in
+            editingSubscriptionRenew = false
         }
     }
 
@@ -386,7 +521,7 @@ struct ContentView: View {
                 row("  topped-up", b.toppedUp)
             }
             Text(snap.source)
-                .font(.caption2)
+                .font(.body)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
         }
@@ -406,7 +541,7 @@ struct ContentView: View {
             }
             .frame(height: 8)
             Text(String(format: "%.1f%% used", clamped))
-                .font(.caption.monospacedDigit())
+                .font(.body.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
     }
@@ -420,11 +555,11 @@ struct ContentView: View {
     private func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top) {
             Text(label)
-                .font(.caption)
+                .font(.body)
                 .foregroundStyle(.secondary)
-                .frame(width: 90, alignment: .leading)
+                .frame(width: 110, alignment: .leading)
             Text(value)
-                .font(.caption.monospacedDigit())
+                .font(.body.monospacedDigit())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }

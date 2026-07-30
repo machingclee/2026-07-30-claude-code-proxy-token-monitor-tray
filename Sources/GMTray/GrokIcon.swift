@@ -3,10 +3,10 @@ import SwiftUI
 
 /// Monochrome Grok mark for the menu bar (template-tinted by the system).
 enum GrokIcon {
-    /// 17 pt template image suitable for `MenuBarExtra`.
+    /// Template image for `MenuBarExtra` (drawn larger next to 12pt metrics).
     static var menuBar: NSImage {
         let source = loadVector() ?? fallbackSymbol()
-        let size = NSSize(width: 17, height: 17)
+        let size = NSSize(width: 20, height: 20)
         let sized = NSImage(size: size)
         sized.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .high
@@ -46,21 +46,24 @@ enum GrokIcon {
     }
 
     private static func resourceURL(name: String, ext: String) -> URL? {
-        // 1) SPM resource bundle (preferred — works with `swift run` + packaged .app)
+        // Prefer Bundle.main (packaged .app). Avoid Bundle.module as the only path —
+        // SPM looks for GMTray_GMTray.bundle at the .app root, which breaks codesign.
+        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
+            return url
+        }
+        // Nested SPM bundle under Resources/ or MacOS/
+        if let res = Bundle.main.resourceURL {
+            let nested = res.appendingPathComponent("GMTray_GMTray.bundle/\(name).\(ext)")
+            if FileManager.default.fileExists(atPath: nested.path) { return nested }
+        }
         if let url = Bundle.module.url(forResource: name, withExtension: ext) {
             return url
         }
 
-        // 2) App Contents/Resources
-        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
-            return url
-        }
-
-        // 3) Explicit paths relative to the running binary / .app
         var roots: [URL] = []
         if let exe = Bundle.main.executableURL?.deletingLastPathComponent() {
-            roots.append(exe) // .../Contents/MacOS
-            roots.append(exe.deletingLastPathComponent().appendingPathComponent("Resources")) // Contents/Resources
+            roots.append(exe) // Contents/MacOS
+            roots.append(exe.deletingLastPathComponent().appendingPathComponent("Resources"))
             roots.append(exe.deletingLastPathComponent().deletingLastPathComponent()) // .app
         }
         roots.append(Bundle.main.bundleURL)
@@ -68,6 +71,8 @@ enum GrokIcon {
         let relative = [
             "GMTray_GMTray.bundle/\(name).\(ext)",
             "Contents/Resources/\(name).\(ext)",
+            "Contents/Resources/GMTray_GMTray.bundle/\(name).\(ext)",
+            "Contents/MacOS/GMTray_GMTray.bundle/\(name).\(ext)",
             "Resources/\(name).\(ext)",
             "\(name).\(ext)",
         ]

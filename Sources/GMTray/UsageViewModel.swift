@@ -25,6 +25,17 @@ final class UsageViewModel: ObservableObject {
     @Published var launchAtLogin = false
     @Published var loginItemMessage: String?
 
+    /// Manual SuperGrok renew (from grok.com Billing / rest/subscriptions).
+    @Published private(set) var subscriptionNextRenew: Date?
+    @Published var subscriptionRenewDraft = ""
+    @Published var subscriptionRenewMessage: String?
+
+    /// Saved Grok CLI logins under ~/.grok/profiles/
+    @Published private(set) var grokProfiles: [GrokAccountStore.Profile] = []
+    @Published private(set) var activeGrokEmail: String?
+    @Published var grokAccountMessage: String?
+    @Published private(set) var isSwitchingGrokAccount = false
+
     /// True while the menu bar panel is open (drives faster 5s polling).
     @Published var isPanelOpen = false
 
@@ -58,8 +69,123 @@ final class UsageViewModel: ObservableObject {
         reloadLoginItem()
         reloadProviders()
         refreshProxyStatus()
+        reloadSubscriptionRenew()
+        reloadGrokProfiles()
         Task { await refresh() }
         startBackgroundPolling()
+    }
+
+    func reloadGrokProfiles() {
+        grokProfiles = GrokAccountStore.listProfiles()
+        activeGrokEmail = GrokAccountStore.activeEmail()
+        // Renew date is per-account — refresh when profiles / active login change.
+        reloadSubscriptionRenew()
+    }
+
+    /// Snapshot current ~/.grok/auth.json into ~/.grok/profiles/<email>.json
+    func saveCurrentGrokAccount() {
+        do {
+            let p = try GrokAccountStore.saveActiveAsProfile()
+            reloadGrokProfiles()
+            grokAccountMessage = "Saved profile: \(p.email)"
+            clearGrokAccountMessageLater()
+        } catch {
+            grokAccountMessage = error.localizedDescription
+            clearGrokAccountMessageLater()
+        }
+    }
+
+    /// Switch active CLI login by copying a profile onto ~/.grok/auth.json
+    func switchGrokAccount(profileId: String) {
+        guard !isSwitchingGrokAccount else { return }
+        isSwitchingGrokAccount = true
+        defer { isSwitchingGrokAccount = false }
+        do {
+            try GrokAccountStore.switchTo(profileId: profileId)
+            reloadGrokProfiles()
+            let email = GrokAccountStore.activeEmail() ?? profileId
+            grokAccountMessage = "Switched to \(email). Refreshing usage…"
+            // Usage tokens change; clear and refetch. Proxy may need restart for Claude.
+            grok = nil
+            Task {
+                await refresh()
+                grokAccountMessage =
+                    "Active: \(GrokAccountStore.activeEmail() ?? email)"
+                    + (isProxyRunning
+                        ? " · Restart proxy if Claude still uses the old account."
+                        : "")
+                clearGrokAccountMessageLater()
+            }
+        } catch {
+            grokAccountMessage = error.localizedDescription
+            clearGrokAccountMessageLater()
+        }
+    }
+
+    private func clearGrokAccountMessageLater() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            grokAccountMessage = nil
+        }
+    }
+
+    func reloadSubscriptionRenew() {
+        let email = activeGrokEmail ?? GrokAccountStore.activeEmail()
+        subscriptionNextRenew = SubscriptionRenewStore.nextRenewal(for: email)
+        if let s = SubscriptionRenewStore.anchorDayString(for: email) {
+            subscriptionRenewDraft = s
+        } else {
+            subscriptionRenewDraft = ""
+        }
+    }
+
+    /// Save anchor day for the **active** Grok account (`yyyy-MM-dd` from grok.com 續訂).
+    /// Next renew is that day if still upcoming, otherwise +1 month repeatedly.
+    func saveSubscriptionRenewDate() {
+        let email = activeGrokEmail ?? GrokAccountStore.activeEmail()
+        guard let email, !email.isEmpty else {
+            subscriptionRenewMessage = "No active Grok login. Run grok login first."
+            return
+        }
+        let raw = subscriptionRenewDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let day = SubscriptionRenewStore.parseDay(raw) else {
+            subscriptionRenewMessage = "Use date format yyyy-MM-dd (e.g. 2026-08-19)"
+            return
+        }
+        SubscriptionRenewStore.setAnchorDate(day, for: email)
+        subscriptionNextRenew = SubscriptionRenewStore.nextRenewal(for: email)
+        subscriptionRenewDraft = SubscriptionRenewStore.anchorDayString(for: email) ?? raw
+        if let next = subscriptionNextRenew {
+            subscriptionRenewMessage =
+                "Saved for \(email). Next renew: \(SubscriptionRenewStore.formatDay(next))"
+        } else {
+            subscriptionRenewMessage = "Saved for \(email)."
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if subscriptionRenewMessage?.hasPrefix("Saved") == true {
+                subscriptionRenewMessage = nil
+            }
+        }
+    }
+
+    func clearSubscriptionRenewDate() {
+        let email = activeGrokEmail ?? GrokAccountStore.activeEmail()
+        SubscriptionRenewStore.setAnchorDate(nil, for: email)
+        subscriptionNextRenew = nil
+        subscriptionRenewDraft = ""
+        subscriptionRenewMessage = email.map { "Cleared renew date for \($0)." }
+            ?? "Cleared subscription renew date."
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if subscriptionRenewMessage?.hasPrefix("Cleared") == true {
+                subscriptionRenewMessage = nil
+            }
+        }
+    }
+
+    var subscriptionRenewRemainingLabel: String {
+        SubscriptionRenewStore.remainingLabel(until: subscriptionNextRenew)
     }
 
     func refreshProxyStatus() {
@@ -107,7 +233,7 @@ final class UsageViewModel: ObservableObject {
             loginItemMessage = nil
             // macOS may require user approval the first time.
             if enabled && SMAppService.mainApp.status == .requiresApproval {
-                loginItemMessage = "Allow GM Tray under System Settings → General → Login Items"
+                loginItemMessage = "Allow Claude-Code-Proxy Token Monitor Tray under System Settings → General → Login Items"
             }
         } catch {
             launchAtLogin = LoginItemService.isEnabled
@@ -144,10 +270,22 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    var grokMenuLabel: String {
+    /// Weekly usage % for Grok tray (upper line).
+    var grokWeeklyLabel: String {
         if let grok { return grok.menuBarTitle }
         if grokError != nil { return "!" }
         return isLoading ? "…" : "—"
+    }
+
+    /// Monthly usage % for Grok tray (lower line).
+    var grokMonthlyLabel: String {
+        if let grok { return grok.menuBarMonthlyTitle }
+        if grokError != nil { return "!" }
+        return isLoading ? "…" : "—"
+    }
+
+    var grokMenuLabel: String {
+        grokWeeklyLabel
     }
 
     var deepseekMenuLabel: String {
@@ -156,20 +294,70 @@ final class UsageViewModel: ObservableObject {
         return isLoading ? "…" : "—"
     }
 
-    /// Single value next to the active-provider icon.
+    /// Single-line tray label next to the icon.
+    /// Grok: `weekly% / monthly%` (e.g. `88% / 59%`).
     var menuBarTitle: String {
         switch activeKind {
         case .deepseek:
             return deepseekMenuLabel
         case .grok:
-            return grokMenuLabel
+            return "\(grokWeeklyLabel) / \(grokMonthlyLabel)"
         case .other:
-            // Unknown provider: show both metrics if available.
-            if grok != nil || deepseek != nil {
-                return "\(grokMenuLabel) · \(deepseekMenuLabel)"
+            if grok != nil {
+                return "\(grokWeeklyLabel) / \(grokMonthlyLabel)"
+            }
+            if deepseek != nil {
+                return deepseekMenuLabel
             }
             return isLoading ? "…" : "—"
         }
+    }
+
+    /// Brand icon + single-line metrics for the status item.
+    var menuBarCompositeImage: NSImage {
+        let icon = menuBarIcon
+        let metrics = MenuBarLabelImage.single(menuBarTitle)
+        let gap: CGFloat = 3
+        // Match metrics height better — earlier 14pt looked tiny next to 12pt text.
+        let iconSide: CGFloat = 20
+        let w = iconSide + gap + max(metrics.size.width, 12)
+        let h = max(iconSide, metrics.size.height, 20)
+        let size = NSSize(width: w, height: h)
+
+        let out = NSImage(size: size, flipped: true) { _ in
+            let iconRect = NSRect(
+                x: 0,
+                y: (h - iconSide) / 2,
+                width: iconSide,
+                height: iconSide
+            )
+            icon.draw(
+                in: iconRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.high]
+            )
+            let metricsRect = NSRect(
+                x: iconSide + gap,
+                y: (h - metrics.size.height) / 2,
+                width: metrics.size.width,
+                height: metrics.size.height
+            )
+            metrics.draw(
+                in: metricsRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.high]
+            )
+            return true
+        }
+        out.isTemplate = true
+        out.accessibilityDescription = menuBarTitle
+        return out
     }
 
     func setPanelOpen(_ open: Bool) {
@@ -178,6 +366,8 @@ final class UsageViewModel: ObservableObject {
             reloadLoginItem()
             reloadProviders()
             refreshProxyStatus()
+            reloadSubscriptionRenew()
+            reloadGrokProfiles()
             Task { await refresh() }
             startPolling()
         } else {
@@ -261,7 +451,7 @@ final class UsageViewModel: ObservableObject {
             }
             let handle = try FileHandle(forWritingTo: logURL)
             try handle.seekToEnd()
-            let header = "\n--- GM Tray start \(ISO8601DateFormatter().string(from: Date())) \(bin) ---\n"
+            let header = "\n--- Claude-Code-Proxy Token Monitor Tray start \(ISO8601DateFormatter().string(from: Date())) \(bin) ---\n"
             if let data = header.data(using: .utf8) {
                 try handle.write(contentsOf: data)
             }
@@ -341,7 +531,7 @@ final class UsageViewModel: ObservableObject {
     private func proxyLogURL() -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
-            .appendingPathComponent("Library/Logs/GMTray/claude-code-proxy.log")
+            .appendingPathComponent("Library/Logs/ClaudeCodeProxyTokenMonitorTray/claude-code-proxy.log")
     }
 
     private func augmentedPATH() -> [String: String] {
