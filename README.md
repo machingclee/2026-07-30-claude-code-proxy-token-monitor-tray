@@ -1,6 +1,6 @@
 # Claude-Code-Proxy Token Monitor Tray
 
-<img width="700" alt="image" src="https://github.com/user-attachments/assets/4ffdb5f4-9aad-40e2-a164-b3bc9d56244a" />
+<img width="500" alt="image" src="https://github.com/user-attachments/assets/18ac0392-4fa2-4eeb-9d8e-18f9ab7319f7" />
 
 
 macOS menu bar tray for Grok / DeepSeek token usage, Claude provider activate, and local `claude-code-proxy` control.
