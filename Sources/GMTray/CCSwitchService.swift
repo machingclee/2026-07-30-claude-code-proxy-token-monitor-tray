@@ -65,6 +65,27 @@ enum CCSwitchService {
             if blob.contains("grok") || base.contains("18765") { return .grok }
             return .other
         }
+
+        /// Short label for DeepSeek Pro vs Flash (and similar) in the tray switcher.
+        var deepseekVariantLabel: String {
+            let blob = "\(name) \(model)".lowercased()
+            if blob.contains("flash") { return "Flash" }
+            if blob.contains("pro") { return "Pro" }
+            if blob.contains("reasoner") || blob.contains("r1") { return "Reasoner" }
+            if blob.contains("chat") { return "Chat" }
+            // Fall back to a trimmed provider name.
+            let cleaned = name
+                .replacingOccurrences(of: "Default ", with: "", options: .caseInsensitive)
+                .replacingOccurrences(of: "DeepSeek ", with: "", options: .caseInsensitive)
+                .trimmingCharacters(in: .whitespaces)
+            return cleaned.isEmpty ? name : cleaned
+        }
+
+        /// Compact model id for secondary UI (e.g. `deepseek-v4-flash[1M]`).
+        var shortModel: String {
+            if model.isEmpty { return "—" }
+            return model
+        }
     }
 
     enum ProviderKind {

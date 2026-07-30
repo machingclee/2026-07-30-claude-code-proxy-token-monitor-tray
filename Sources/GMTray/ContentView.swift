@@ -32,7 +32,7 @@ struct ContentView: View {
                     error: model.grokError,
                     provider: model.provider(for: .grok)
                 ) {
-                    // Account switch first, then usage (weekly / monthly).
+                    // Accounts → Save (if needed) → Activate / proxy → usage.
                     grokAccountsSection
                     if let snap = model.grok {
                         weeklySection(snap)
@@ -50,6 +50,8 @@ struct ContentView: View {
                     error: model.deepseekError,
                     provider: model.provider(for: .deepseek)
                 ) {
+                    // Activate Pro / Flash (and any other DeepSeek CC Switch providers) first.
+                    deepseekModelsSection
                     if let snap = model.deepseek {
                         deepseekSection(snap)
                     } else if model.deepseekError == nil {
@@ -233,9 +235,12 @@ struct ContentView: View {
                         .padding(.leading, 4)
                 }
 
-                activateControl(for: provider, kind: icon)
-                    .padding(.top, 4)
-                    .padding(.leading, 4)
+                // Grok: Activate + proxy sit under "Save current login" in grokAccountsSection.
+                if icon != .grok {
+                    activateControl(for: provider, kind: icon)
+                        .padding(.top, 4)
+                        .padding(.leading, 4)
+                }
             } else if let error {
                 Text(error)
                     .font(.body)
@@ -252,7 +257,24 @@ struct ContentView: View {
         kind: CCSwitchService.ProviderKind
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let provider {
+            // DeepSeek multi-variant: Activate lives on each Pro/Flash row above.
+            // Single DeepSeek (or Grok): keep the full-width Activate / active status.
+            if kind == .deepseek && model.deepseekProviders.count > 1 {
+                if let cur = model.currentProvider, cur.kind == .deepseek {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Color.accentColor)
+                            .imageScale(.small)
+                        Text("Active: \(cur.deepseekVariantLabel) → ~/.claude/settings.json")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Choose Pro or Flash above, then Restart Claude Code.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let provider {
                 if provider.isCurrent {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
@@ -280,35 +302,10 @@ struct ContentView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Grok-only: proxy controls (account switch lives above Weekly).
-            if kind == .grok {
-                if model.isProxyRunning {
-                    Button {
-                        model.stopClaudeCodeProxy()
-                    } label: {
-                        Text("Stop claude-code-proxy")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .disabled(model.isLaunchingProxy || model.isSwitching)
-                    .help("Port 18765 is in use — stop listeners (SIGTERM)")
-                } else {
-                    Button {
-                        model.launchClaudeCodeProxy()
-                    } label: {
-                        Text("Launch claude-code-proxy")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .disabled(model.isLaunchingProxy || model.isSwitching)
-                    .help("Run: claude-code-proxy serve --no-monitor (brew install claude-code-proxy)")
-                }
-            }
         }
     }
 
+    /// Grok accounts (Activate per row like DeepSeek), optional Save, then proxy.
     private var grokAccountsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Grok accounts")
@@ -326,7 +323,7 @@ struct ContentView: View {
                         Text(p.email)
                             .font(.body)
                             .lineLimit(1)
-                        if p.isActive {
+                        if model.isGrokAccountFullyActive(p) {
                             Text("active")
                                 .font(.body)
                                 .padding(.horizontal, 5)
@@ -336,38 +333,83 @@ struct ContentView: View {
                                 .clipShape(Capsule())
                         }
                         Spacer(minLength: 4)
-                        if p.isActive {
+                        if model.isGrokAccountFullyActive(p) {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.title2)
                                 .foregroundStyle(Color.accentColor)
                                 .symbolRenderingMode(.hierarchical)
-                        } else if p.id != "__active__" {
-                            Button("Switch") {
-                                model.switchGrokAccount(profileId: p.id)
+                        } else if p.id != "__active__" || p.isActive {
+                            // Saved profiles, or current login when Claude is not on Grok yet.
+                            Button("Activate") {
+                                model.activateGrokAccount(profileId: p.id)
                             }
+                            .buttonStyle(.borderedProminent)
                             .controlSize(.regular)
-                            .disabled(model.isSwitchingGrokAccount)
+                            .disabled(model.isSwitchingGrokAccount || model.isSwitching)
+                            .help("Use this Grok login and activate Grok in ~/.claude/settings.json")
                         }
                     }
                 }
             }
 
-            Button {
-                model.saveCurrentGrokAccount()
-            } label: {
-                Text("Save current login as profile")
-                    .frame(maxWidth: .infinity)
+            // Only when current ~/.grok/auth.json is not already under profiles/.
+            if model.shouldOfferSaveCurrentGrokProfile {
+                Button {
+                    model.saveCurrentGrokAccount()
+                } label: {
+                    Text("Save current login as profile")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .padding(.top, 8)
+                .help("Copy ~/.grok/auth.json → ~/.grok/profiles/<email>.json")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
-            .padding(.top, 8)
-            .help("Copy ~/.grok/auth.json → ~/.grok/profiles/<email>.json")
 
             if let msg = model.grokAccountMessage {
                 Text(msg)
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Proxy — Activate lives on each account row (like DeepSeek Pro/Flash).
+            // Auth: Launch syncs tray ~/.grok/auth.json → proxy auth. Browser login is separate
+            // (ccs Grok Launch used to run `grok login` every time; we only popup on demand).
+            Button {
+                model.openGrokProxyBrowserLogin()
+            } label: {
+                Text("Grok login (browser)")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(model.isLaunchingProxy || model.isSwitching)
+            .help("Opens Terminal: claude-code-proxy grok auth login (+ optional grok login). Use when you get 402 or tokens expired.")
+            .padding(.top, 8)
+
+            if model.isProxyRunning {
+                Button {
+                    model.stopClaudeCodeProxy()
+                } label: {
+                    Text("Stop claude-code-proxy")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .disabled(model.isLaunchingProxy || model.isSwitching)
+                .help("Port 18765 is in use — stop listeners (SIGTERM)")
+            } else {
+                Button {
+                    model.launchClaudeCodeProxy()
+                } label: {
+                    Text("Launch claude-code-proxy")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .disabled(model.isLaunchingProxy || model.isSwitching)
+                .help("Syncs active Grok login into proxy auth, then: claude-code-proxy serve --no-monitor")
             }
 
             Divider().padding(.vertical, 4)
@@ -508,6 +550,67 @@ struct ContentView: View {
         }
         .onChange(of: model.activeGrokEmail) { _ in
             editingSubscriptionRenew = false
+        }
+    }
+
+    /// Activate among CC Switch DeepSeek providers (e.g. V4 Pro vs V4 Flash).
+    /// Every non-active row is **Activate** (never "Switch").
+    private var deepseekModelsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("DeepSeek model")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            let list = model.deepseekProviders
+            if list.isEmpty {
+                Text("No DeepSeek provider in CC Switch. Add Pro / Flash there, then Refresh.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(list) { p in
+                    HStack(spacing: 6) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(p.deepseekVariantLabel)
+                                    .font(.body.weight(.medium))
+                                    .lineLimit(1)
+                                if p.isCurrent {
+                                    Text("active")
+                                        .font(.body)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Color.accentColor.opacity(0.15))
+                                        .foregroundStyle(Color.accentColor)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            Text(p.shortModel)
+                                .font(.body)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .help(p.name)
+                        }
+                        Spacer(minLength: 4)
+                        if p.isCurrent {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(Color.accentColor)
+                                .symbolRenderingMode(.hierarchical)
+                        } else {
+                            Button("Activate") {
+                                model.activateProvider(p)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
+                            .disabled(model.isSwitching)
+                            .help("Write \(p.name) into ~/.claude/settings.json (CC Switch)")
+                        }
+                    }
+                }
+            }
+
+            Divider().padding(.vertical, 4)
         }
     }
 

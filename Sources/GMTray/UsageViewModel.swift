@@ -82,6 +82,12 @@ final class UsageViewModel: ObservableObject {
         reloadSubscriptionRenew()
     }
 
+    /// True when the active CLI login is not yet stored under `~/.grok/profiles/`
+    /// (listProfiles surfaces that as a synthetic `id == "__active__"` row).
+    var shouldOfferSaveCurrentGrokProfile: Bool {
+        grokProfiles.contains { $0.id == "__active__" }
+    }
+
     /// Snapshot current ~/.grok/auth.json into ~/.grok/profiles/<email>.json
     func saveCurrentGrokAccount() {
         do {
@@ -95,31 +101,74 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Switch active CLI login by copying a profile onto ~/.grok/auth.json
-    func switchGrokAccount(profileId: String) {
-        guard !isSwitchingGrokAccount else { return }
+    /// Whether this Grok profile row is fully active (CLI login + CC Switch Grok provider).
+    func isGrokAccountFullyActive(_ profile: GrokAccountStore.Profile) -> Bool {
+        profile.isActive && (provider(for: .grok)?.isCurrent == true)
+    }
+
+    /// Activate a Grok account row (same idea as DeepSeek Pro/Flash Activate):
+    /// 1) switch `~/.grok/auth.json` to that profile if needed
+    /// 2) sync that login into `~/.config/claude-code-proxy/grok/auth.json` (what the proxy uses)
+    /// 3) activate the Grok CC Switch provider if Claude is not already on Grok
+    /// 4) restart proxy if it was running so upstream uses the new tokens
+    func activateGrokAccount(profileId: String) {
+        guard !isSwitchingGrokAccount && !isSwitching else { return }
         isSwitchingGrokAccount = true
         defer { isSwitchingGrokAccount = false }
+
+        let needProfileSwitch: Bool = {
+            if profileId == "__active__" { return false }
+            return !grokProfiles.contains { $0.id == profileId && $0.isActive }
+        }()
+
         do {
-            try GrokAccountStore.switchTo(profileId: profileId)
-            reloadGrokProfiles()
-            let email = GrokAccountStore.activeEmail() ?? profileId
-            grokAccountMessage = "Switched to \(email). Refreshing usage…"
-            // Usage tokens change; clear and refetch. Proxy may need restart for Claude.
-            grok = nil
+            if needProfileSwitch {
+                try GrokAccountStore.switchTo(profileId: profileId)
+                reloadGrokProfiles()
+                grok = nil
+            } else {
+                // Profile already active as CLI login — still push into proxy auth file.
+                _ = try GrokAccountStore.syncActiveAuthToProxy()
+            }
+
+            // Ensure Claude uses the Grok provider (omit separate Activate button).
+            if let grokProvider = provider(for: .grok), !grokProvider.isCurrent {
+                isSwitching = true
+                defer { isSwitching = false }
+                _ = try CCSwitchService.activate(providerId: grokProvider.id)
+                reloadProviders()
+            }
+
+            let email = GrokAccountStore.activeEmail()
+                ?? grokProfiles.first(where: { $0.id == profileId })?.email
+                ?? profileId
+            let wasProxy = isProxyRunning
+            if wasProxy {
+                // Restart so the proxy process does not keep a stale in-memory token.
+                stopClaudeCodeProxy()
+                launchClaudeCodeProxy()
+            }
+
+            grokAccountMessage = "Activated \(email) · synced to claude-code-proxy auth"
             Task {
                 await refresh()
-                grokAccountMessage =
-                    "Active: \(GrokAccountStore.activeEmail() ?? email)"
-                    + (isProxyRunning
-                        ? " · Restart proxy if Claude still uses the old account."
-                        : "")
+                var msg = "Active: \(GrokAccountStore.activeEmail() ?? email) · proxy auth synced"
+                if wasProxy {
+                    msg += " · proxy restarted"
+                }
+                msg += " · Restart Claude Code if needed."
+                grokAccountMessage = msg
                 clearGrokAccountMessageLater()
             }
         } catch {
             grokAccountMessage = error.localizedDescription
             clearGrokAccountMessageLater()
         }
+    }
+
+    /// Switch active CLI login by copying a profile onto ~/.grok/auth.json
+    func switchGrokAccount(profileId: String) {
+        activateGrokAccount(profileId: profileId)
     }
 
     private func clearGrokAccountMessageLater() {
@@ -250,6 +299,30 @@ final class UsageViewModel: ObservableObject {
         // Prefer current if it matches, else first match by name/base heuristics.
         if let cur = currentProvider, cur.kind == kind { return cur }
         return providers.first { $0.kind == kind }
+    }
+
+    /// All CC Switch Claude providers of a kind (e.g. DeepSeek Pro + Flash).
+    func providers(for kind: CCSwitchService.ProviderKind) -> [CCSwitchService.Provider] {
+        providers.filter { $0.kind == kind }
+    }
+
+    /// DeepSeek providers only — Pro / Flash / etc. for the in-panel switcher.
+    /// Prefer Pro before Flash when both exist; otherwise keep CC Switch order.
+    var deepseekProviders: [CCSwitchService.Provider] {
+        let rank: (CCSwitchService.Provider) -> Int = { p in
+            switch p.deepseekVariantLabel.lowercased() {
+            case "pro": return 0
+            case "flash": return 1
+            case "reasoner": return 2
+            case "chat": return 3
+            default: return 10
+            }
+        }
+        return providers(for: .deepseek).sorted { a, b in
+            let ra = rank(a), rb = rank(b)
+            if ra != rb { return ra < rb }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
     }
 
     /// Active CC Switch provider kind (drives tray icon).
@@ -417,6 +490,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     /// Start official binary: `claude-code-proxy serve --no-monitor` (no `ccs` required).
+    /// Syncs the tray-selected Grok login into the proxy auth file first (split auth stores).
     func launchClaudeCodeProxy() {
         guard !isLaunchingProxy else { return }
         isLaunchingProxy = true
@@ -436,6 +510,22 @@ final class UsageViewModel: ObservableObject {
             setSwitchMessage(
                 "claude-code-proxy not found.\n"
                     + "Install: brew install claude-code-proxy"
+            )
+            return
+        }
+
+        // ccs Grok Launch runs `grok login` first (browser). We instead push the
+        // tray-active ~/.grok/auth.json into the proxy’s own auth file. Use
+        // “Grok login (browser)” when you need a fresh OAuth popup.
+        var syncNote = ""
+        do {
+            let email = try GrokAccountStore.syncActiveAuthToProxy()
+            syncNote = " · auth: \(email)"
+        } catch {
+            setSwitchMessage(
+                "No usable Grok auth for the proxy.\n"
+                    + "\(error.localizedDescription)\n"
+                    + "Use “Grok login (browser)” first, then Launch again."
             )
             return
         }
@@ -471,7 +561,7 @@ final class UsageViewModel: ObservableObject {
             for _ in 0..<40 {
                 Thread.sleep(forTimeInterval: 0.1)
                 if Self.isListening(port: Self.proxyPort) {
-                    setSwitchMessage("Started claude-code-proxy on :\(Self.proxyPort).")
+                    setSwitchMessage("Started claude-code-proxy on :\(Self.proxyPort)\(syncNote).")
                     return
                 }
                 if !proc.isRunning {
@@ -488,6 +578,125 @@ final class UsageViewModel: ObservableObject {
             )
         } catch {
             setSwitchMessage("Failed to start claude-code-proxy: \(error.localizedDescription)")
+        }
+    }
+
+    /// Open a real Terminal window for browser OAuth.
+    /// Uses a `.command` file + `NSWorkspace.open` (reliable from menu-bar apps).
+    /// AppleScript `osascript` often fails silently for LSUIElement apps without Automation permission.
+    func openGrokProxyBrowserLogin() {
+        guard !isLaunchingProxy else { return }
+
+        let bin = resolveClaudeCodeProxy() ?? "/opt/homebrew/bin/claude-code-proxy"
+        let logDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/ClaudeCodeProxyTokenMonitorTray")
+        let scriptURL = logDir.appendingPathComponent("grok-login.command")
+
+        // Shell-escape single quotes for embedding in a single-quoted zsh string if needed;
+        // path is written into a file, so only need basic safety.
+        let shellBody = """
+        #!/bin/zsh
+        set +e
+        export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.grok/bin:$PATH"
+        clear
+        echo "=== Grok login (browser) — Claude-Code-Proxy Token Monitor Tray ==="
+        echo ""
+        echo "This window will open a browser for SuperGrok OAuth."
+        echo "Proxy auth file: ~/.config/claude-code-proxy/grok/auth.json"
+        echo "CLI auth file:   ~/.grok/auth.json"
+        echo ""
+        echo "Step 1/2: claude-code-proxy grok auth login"
+        echo "Binary: \(bin)"
+        echo ""
+        "\(bin)" grok auth login
+        code=$?
+        echo ""
+        if [ "$code" -ne 0 ]; then
+          echo "Proxy Grok login failed (exit $code)."
+          echo "You can retry:  \(bin) grok auth login"
+        else
+          echo "Step 1 OK."
+          echo ""
+          echo "Step 2/2: grok login (so tray usage matches the same account)"
+          if command -v grok >/dev/null 2>&1; then
+            grok login
+            echo "Step 2 finished (exit $?)."
+          else
+            echo "grok CLI not on PATH — skipped. Tray can still use proxy auth after Activate sync."
+          fi
+          echo ""
+          echo "Done. Back in the tray:"
+          echo "  1) Activate the Grok account you just used"
+          echo "  2) Launch claude-code-proxy"
+          echo "  3) Restart Claude Code"
+        fi
+        echo ""
+        echo "Press Return to close this window…"
+        read -r _
+        """
+
+        do {
+            try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            try shellBody.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: scriptURL.path
+            )
+            // Clear quarantine so double-open isn't blocked.
+            let xattr = Process()
+            xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+            xattr.arguments = ["-cr", scriptURL.path]
+            xattr.standardOutput = Pipe()
+            xattr.standardError = Pipe()
+            try? xattr.run()
+            xattr.waitUntilExit()
+
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            // Prefer Terminal explicitly; .command usually goes there anyway.
+            if let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
+                NSWorkspace.shared.open(
+                    [scriptURL],
+                    withApplicationAt: terminal,
+                    configuration: config
+                ) { _, error in
+                    Task { @MainActor in
+                        if let error {
+                            self.setSwitchMessage(
+                                "Terminal open failed: \(error.localizedDescription)\n"
+                                    + "Run: \(bin) grok auth login"
+                            )
+                        } else {
+                            self.setSwitchMessage(
+                                "Terminal opened for Grok browser login. Finish in that window."
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Fallback: open the .command file with default handler.
+                NSWorkspace.shared.open(scriptURL, configuration: config) { _, error in
+                    Task { @MainActor in
+                        if let error {
+                            self.setSwitchMessage(
+                                "Could not open login script: \(error.localizedDescription)\n"
+                                    + "Run in Terminal:\n  \(bin) grok auth login"
+                            )
+                        } else {
+                            self.setSwitchMessage(
+                                "Opened grok-login.command. Finish login in the Terminal window."
+                            )
+                        }
+                    }
+                }
+            }
+        } catch {
+            setSwitchMessage(
+                "Could not write login script: \(error.localizedDescription)\n"
+                    + "Run manually in Terminal:\n"
+                    + "  \(bin) grok auth login\n"
+                    + "  grok login"
+            )
         }
     }
 

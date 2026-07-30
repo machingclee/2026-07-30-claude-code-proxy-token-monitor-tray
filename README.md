@@ -59,11 +59,10 @@ open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
 
 Order inside the expanded panel:
 
-1. **Grok accounts** — switch SuperGrok CLI logins  
-2. **Weekly** usage  
-3. **Monthly** usage (API calendar window) + subscription renew  
-4. **Activate** (CC Switch → Claude uses Grok proxy)  
-5. **Launch / Stop claude-code-proxy** (port `18765`)
+1. **Grok accounts** — **Activate** per email (that CLI login + CC Switch Grok provider, like DeepSeek Pro/Flash)  
+2. **Save current login as profile** — only if this login is not already saved  
+3. **Launch / Stop claude-code-proxy** (port `18765`)  
+4. **Weekly** / **Monthly** usage + subscription renew
 
 #### Multiple Grok accounts
 
@@ -74,11 +73,11 @@ Order inside the expanded panel:
 1. With account A logged in: open tray → Grok → **Save current login as profile**  
 2. In Terminal: `grok login` as account B  
 3. Tray → **Save current login as profile** again  
-4. Use **Switch** next to a profile to change the active CLI account  
+4. Use **Activate** next to a profile to use that CLI login and set Grok as Claude’s provider  
 
-Accounts are listed **A→Z by email**. Switching only moves the checkmark; order stays alphabetical.
+Accounts are listed **A→Z by email**. Activating only moves the checkmark; order stays alphabetical.
 
-After switching, usage refetches for that account. If Claude still uses the old Grok identity, **Stop** then **Launch** `claude-code-proxy`.
+After activating another account, usage refetches. If Claude still uses the old Grok identity, **Stop** then **Launch** `claude-code-proxy`, and restart Claude Code.
 
 #### Weekly vs monthly numbers
 
@@ -103,9 +102,12 @@ Dates are stored **per Grok email**. After the day passes, the next renew is com
 
 | Button | Action |
 | --- | --- |
-| **Activate** | Write the CC Switch Grok provider into `~/.claude/settings.json` |
-| **Launch claude-code-proxy** | Runs stock `claude-code-proxy serve --no-monitor` (needs Homebrew binary on `PATH`) |
+| **Activate** (per Grok account) | That CLI login → `~/.grok/auth.json` **and** proxy auth → `~/.config/claude-code-proxy/grok/auth.json`, plus CC Switch Grok provider |
+| **Grok login (browser)** | Opens Terminal for `claude-code-proxy grok auth login` (and optional `grok login`) — use on **402** / expired tokens |
+| **Launch claude-code-proxy** | Syncs tray Grok auth into the proxy auth file, then `claude-code-proxy serve --no-monitor` |
 | **Stop claude-code-proxy** | Shown when something is listening on **:18765**; stops those PIDs |
+
+**Why no browser popup on Launch?** `ccs grok-launch` always ran `grok login` in a new Terminal (browser every time). The tray Launch only **starts the server** and **syncs** the already-selected account into the proxy auth file. Use **Grok login (browser)** when you need a fresh OAuth page. **402 Grok upstream** usually means wrong/expired proxy auth or that SuperGrok account is out of quota — Activate the right account, re-login if needed, restart proxy.
 
 Install proxy if needed:
 
@@ -117,9 +119,11 @@ Restart Claude Code after **Activate**.
 
 ### DeepSeek section (expand the DeepSeek row)
 
+- **DeepSeek model** — **Activate** among CC Switch DeepSeek providers (e.g. **Pro** vs **Flash**); same merge as CC Switch / `ccs`  
+
 - Shows prepaid balance from `GET https://api.deepseek.com/user/balance`  
-- Key is read from the DeepSeek provider in CC Switch (or env / live Claude settings if already on DeepSeek)  
-- **Activate** writes that CC Switch provider into `~/.claude/settings.json`  
+- Key is read from the DeepSeek provider(s) in CC Switch (or env / live Claude settings if already on DeepSeek)  
+
 
 ### Data locations (companion model)
 
@@ -209,7 +213,7 @@ The tray does not require `ccs` for proxy launch/stop; it calls `claude-code-pro
 | --- | --- |
 | No icon in menu bar | `pgrep -x GMTray`; check menu bar overflow `»` |
 | Grok shows `!` or empty | `grok login`, then Refresh |
-| Wrong Grok usage after switch | Confirm profile **Switch**; restart proxy if needed |
+| Wrong Grok usage after account change | Confirm profile **Activate**; restart proxy if needed |
 | DeepSeek error | Add DeepSeek provider in CC Switch with API key |
 | Activate did nothing in Claude | Restart Claude Code |
 | Proxy Launch fails | Install `claude-code-proxy` via Homebrew; check `~/Library/Logs/ClaudeCodeProxyTokenMonitorTray/claude-code-proxy.log` |
