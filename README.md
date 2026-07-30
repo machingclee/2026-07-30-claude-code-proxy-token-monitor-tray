@@ -8,7 +8,7 @@ macOS **menu bar** companion for [CC Switch](https://github.com/) + Grok / DeepS
 | Panel | Activate a CC Switch provider → writes `~/.claude/settings.json` |
 | Grok | Weekly / monthly quota (same APIs as `gm`) |
 | DeepSeek | Prepaid balance (same API as `ds`) |
-| Poll | Every **5s** while the panel is open; click refetches immediately |
+| Poll | Every **20s** in the background (menu bar); every **5s** while the panel is open; click refetches immediately |
 
 No separate key store. Providers and DeepSeek keys come from **CC Switch**; Grok auth from **`grok login`**.
 
@@ -142,9 +142,9 @@ The tray does **not** search the disk for CC Switch. It uses the **same fixed la
 
 | Action | What happens |
 | --- | --- |
-| App launches | Prefetch Grok + DeepSeek; icon = active provider |
+| App launches | Prefetch Grok + DeepSeek; icon = active provider; background poll every 20s |
 | Click icon | Open panel + refetch |
-| Panel open | Poll every 5s |
+| Panel open | Poll every 5s (background 20s tick skips while open) |
 | **Activate** | Write `~/.claude/settings.json` from that CC Switch provider; update tray icon |
 | After Activate | **Restart Claude Code** so it picks up the new env |
 | Refresh / `⌘R` | Manual refetch |
@@ -186,7 +186,7 @@ ccs gm / ccs ds
 Sources/GMTray/
   GMTrayApp.swift         MenuBarExtra (icon = active provider)
   ContentView.swift       panel: Activate + usage
-  UsageViewModel.swift    refresh + 5s poll + activate
+  UsageViewModel.swift    refresh + 20s background / 5s panel poll + activate
   CCSwitchService.swift   read/write ~/.cc-switch + settings.json
   UsageService.swift      Grok billing (gm-compatible)
   DeepSeekService.swift   DeepSeek balance (ds-compatible)

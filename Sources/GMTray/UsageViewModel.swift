@@ -25,13 +25,17 @@ final class UsageViewModel: ObservableObject {
     @Published var launchAtLogin = false
     @Published var loginItemMessage: String?
 
-    /// True while the menu bar panel is open (drives 5s polling).
+    /// True while the menu bar panel is open (drives faster 5s polling).
     @Published var isPanelOpen = false
 
     private var pollTask: Task<Void, Never>?
+    private var backgroundPollTask: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
     private var messageClearTask: Task<Void, Never>?
+    /// Poll interval while the panel is open.
     private let pollInterval: TimeInterval = 5
+    /// Poll interval while the tray is idle (keeps menu bar label fresh).
+    private let backgroundPollInterval: TimeInterval = 20
     private let messageDisplaySeconds: TimeInterval = 5
 
     static let proxyPort: UInt16 = 18765
@@ -55,6 +59,7 @@ final class UsageViewModel: ObservableObject {
         reloadProviders()
         refreshProxyStatus()
         Task { await refresh() }
+        startBackgroundPolling()
     }
 
     func refreshProxyStatus() {
@@ -457,6 +462,7 @@ final class UsageViewModel: ObservableObject {
         catch { return .failure(error) }
     }
 
+    /// Faster refresh while the dropdown panel is visible.
     private func startPolling() {
         stopPolling()
         pollTask = Task { [weak self] in
@@ -472,5 +478,22 @@ final class UsageViewModel: ObservableObject {
     private func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+    }
+
+    /// Keep the menu bar label up to date even when the panel is closed.
+    private func startBackgroundPolling() {
+        backgroundPollTask?.cancel()
+        backgroundPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(
+                    nanoseconds: UInt64((self?.backgroundPollInterval ?? 20) * 1_000_000_000)
+                )
+                guard !Task.isCancelled else { break }
+                guard let self else { break }
+                // Panel already polls every 5s — skip the slower tick while open.
+                if self.isPanelOpen { continue }
+                await self.refresh()
+            }
+        }
     }
 }
