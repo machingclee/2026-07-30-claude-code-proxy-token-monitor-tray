@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 import AppKit
+import ServiceManagement
+import Darwin
 
 @MainActor
 final class UsageViewModel: ObservableObject {
@@ -15,21 +17,108 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var providersError: String?
     @Published private(set) var isSwitching = false
     @Published var switchMessage: String?
+    @Published private(set) var isLaunchingProxy = false
+    /// True when something accepts TCP on 127.0.0.1:18765 (claude-code-proxy).
+    @Published private(set) var isProxyRunning = false
+
+    /// Open at Login (SMAppService).
+    @Published var launchAtLogin = false
+    @Published var loginItemMessage: String?
 
     /// True while the menu bar panel is open (drives 5s polling).
     @Published var isPanelOpen = false
 
     private var pollTask: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
+    private var messageClearTask: Task<Void, Never>?
     private let pollInterval: TimeInterval = 5
+    private let messageDisplaySeconds: TimeInterval = 5
+
+    static let proxyPort: UInt16 = 18765
+
+    /// Show a brief status line; auto-clears after 5 seconds.
+    func setSwitchMessage(_ text: String?) {
+        messageClearTask?.cancel()
+        switchMessage = text
+        guard text != nil else { return }
+        messageClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(messageDisplaySeconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if switchMessage == text {
+                switchMessage = nil
+            }
+        }
+    }
 
     init() {
+        reloadLoginItem()
         reloadProviders()
+        refreshProxyStatus()
         Task { await refresh() }
+    }
+
+    func refreshProxyStatus() {
+        isProxyRunning = Self.isListening(port: Self.proxyPort)
+    }
+
+    /// TCP connect probe to 127.0.0.1:port (same idea as ccs `_is_proxy_running`).
+    static func isListening(port: UInt16) -> Bool {
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { _ = Darwin.close(fd) }
+
+        var timeout = timeval(tv_sec: 0, tv_usec: 300_000) // 0.3s
+        _ = setsockopt(
+            fd, SOL_SOCKET, SO_SNDTIMEO,
+            &timeout, socklen_t(MemoryLayout<timeval>.size)
+        )
+        _ = setsockopt(
+            fd, SOL_SOCKET, SO_RCVTIMEO,
+            &timeout, socklen_t(MemoryLayout<timeval>.size)
+        )
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.stride)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let rc = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.stride))
+            }
+        }
+        return rc == 0
+    }
+
+    func reloadLoginItem() {
+        launchAtLogin = LoginItemService.isEnabled
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try LoginItemService.setEnabled(enabled)
+            launchAtLogin = LoginItemService.isEnabled
+            loginItemMessage = nil
+            // macOS may require user approval the first time.
+            if enabled && SMAppService.mainApp.status == .requiresApproval {
+                loginItemMessage = "Allow GM Tray under System Settings → General → Login Items"
+            }
+        } catch {
+            launchAtLogin = LoginItemService.isEnabled
+            loginItemMessage = error.localizedDescription
+        }
     }
 
     var currentProvider: CCSwitchService.Provider? {
         providers.first(where: \.isCurrent)
+    }
+
+    /// First CC Switch Claude provider matching a kind (for Activate in usage detail).
+    func provider(for kind: CCSwitchService.ProviderKind) -> CCSwitchService.Provider? {
+        // Prefer current if it matches, else first match by name/base heuristics.
+        if let cur = currentProvider, cur.kind == kind { return cur }
+        return providers.first { $0.kind == kind }
     }
 
     /// Active CC Switch provider kind (drives tray icon).
@@ -81,7 +170,9 @@ final class UsageViewModel: ObservableObject {
     func setPanelOpen(_ open: Bool) {
         isPanelOpen = open
         if open {
+            reloadLoginItem()
             reloadProviders()
+            refreshProxyStatus()
             Task { await refresh() }
             startPolling()
         } else {
@@ -104,20 +195,214 @@ final class UsageViewModel: ObservableObject {
     func activateProvider(_ provider: CCSwitchService.Provider) {
         guard !isSwitching else { return }
         if provider.isCurrent {
-            switchMessage = "Already active: \(provider.name)"
+            setSwitchMessage("Already active: \(provider.name)")
             return
         }
         isSwitching = true
-        switchMessage = nil
+        setSwitchMessage(nil)
         defer { isSwitching = false }
         do {
             _ = try CCSwitchService.activate(providerId: provider.id)
             reloadProviders()
-            switchMessage = "Activated \(provider.name). Restart Claude Code."
+            setSwitchMessage("Activated \(provider.name). Restart Claude Code.")
             Task { await refresh() }
         } catch {
-            switchMessage = error.localizedDescription
+            setSwitchMessage(error.localizedDescription)
         }
+    }
+
+    /// Toggle proxy: if :18765 is up → stop listeners, else start stock `claude-code-proxy serve`.
+    func toggleClaudeCodeProxy() {
+        refreshProxyStatus()
+        if isProxyRunning {
+            stopClaudeCodeProxy()
+        } else {
+            launchClaudeCodeProxy()
+        }
+    }
+
+    /// Start official binary: `claude-code-proxy serve --no-monitor` (no `ccs` required).
+    func launchClaudeCodeProxy() {
+        guard !isLaunchingProxy else { return }
+        isLaunchingProxy = true
+        setSwitchMessage(nil)
+        defer {
+            isLaunchingProxy = false
+            refreshProxyStatus()
+        }
+
+        refreshProxyStatus()
+        if isProxyRunning {
+            setSwitchMessage("claude-code-proxy already running on :\(Self.proxyPort).")
+            return
+        }
+
+        guard let bin = resolveClaudeCodeProxy() else {
+            setSwitchMessage(
+                "claude-code-proxy not found.\n"
+                    + "Install: brew install claude-code-proxy"
+            )
+            return
+        }
+
+        let logURL = proxyLogURL()
+        do {
+            try FileManager.default.createDirectory(
+                at: logURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if !FileManager.default.fileExists(atPath: logURL.path) {
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            }
+            let handle = try FileHandle(forWritingTo: logURL)
+            try handle.seekToEnd()
+            let header = "\n--- GM Tray start \(ISO8601DateFormatter().string(from: Date())) \(bin) ---\n"
+            if let data = header.data(using: .utf8) {
+                try handle.write(contentsOf: data)
+            }
+
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: bin)
+            // Stock CLI: serve starts the proxy; --no-monitor keeps it lightweight.
+            proc.arguments = ["serve", "--no-monitor"]
+            proc.standardOutput = handle
+            proc.standardError = handle
+            proc.environment = augmentedPATH()
+            // Detach so closing the tray doesn't kill the proxy.
+            proc.qualityOfService = .utility
+
+            try proc.run()
+            // Don't wait for serve to exit — wait for the port.
+            for _ in 0..<40 {
+                Thread.sleep(forTimeInterval: 0.1)
+                if Self.isListening(port: Self.proxyPort) {
+                    setSwitchMessage("Started claude-code-proxy on :\(Self.proxyPort).")
+                    return
+                }
+                if !proc.isRunning {
+                    setSwitchMessage(
+                        "claude-code-proxy exited early.\n"
+                            + "Log: \(logURL.path)"
+                    )
+                    return
+                }
+            }
+            setSwitchMessage(
+                "Started \(bin) but :\(Self.proxyPort) did not open.\n"
+                    + "Log: \(logURL.path)"
+            )
+        } catch {
+            setSwitchMessage("Failed to start claude-code-proxy: \(error.localizedDescription)")
+        }
+    }
+
+    /// Stop whatever is listening on :18765 (SIGTERM, then SIGKILL). No `ccs` required.
+    func stopClaudeCodeProxy() {
+        guard !isLaunchingProxy else { return }
+        isLaunchingProxy = true
+        setSwitchMessage(nil)
+        defer {
+            isLaunchingProxy = false
+            refreshProxyStatus()
+        }
+
+        let pids = listenerPIDs(port: Self.proxyPort)
+        if pids.isEmpty {
+            setSwitchMessage("No process listening on :\(Self.proxyPort).")
+            return
+        }
+
+        for pid in pids {
+            kill(pid_t(pid), SIGTERM)
+        }
+        for _ in 0..<30 {
+            Thread.sleep(forTimeInterval: 0.1)
+            if listenerPIDs(port: Self.proxyPort).isEmpty {
+                setSwitchMessage("Stopped proxy pid(s): \(pids.map(String.init).joined(separator: ", ")).")
+                return
+            }
+        }
+        for pid in listenerPIDs(port: Self.proxyPort) {
+            kill(pid_t(pid), SIGKILL)
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        if listenerPIDs(port: Self.proxyPort).isEmpty {
+            setSwitchMessage("Force-stopped proxy on :\(Self.proxyPort).")
+        } else {
+            setSwitchMessage("Failed to free :\(Self.proxyPort); still listening.")
+        }
+    }
+
+    private func proxyLogURL() -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home
+            .appendingPathComponent("Library/Logs/GMTray/claude-code-proxy.log")
+    }
+
+    private func augmentedPATH() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let extras = [
+            "\(NSHomeDirectory())/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        let path = env["PATH"] ?? "/usr/bin:/bin"
+        env["PATH"] = (extras + [path]).joined(separator: ":")
+        return env
+    }
+
+    /// Resolve stock `claude-code-proxy` binary (Homebrew / PATH / ~/.local/bin).
+    private func resolveClaudeCodeProxy() -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/claude-code-proxy",
+            "/usr/local/bin/claude-code-proxy",
+            "\(NSHomeDirectory())/.local/bin/claude-code-proxy",
+            "\(NSHomeDirectory())/.grok/bin/claude-code-proxy",
+        ]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in path.split(separator: ":") {
+            let full = "\(dir)/claude-code-proxy"
+            if FileManager.default.isExecutableFile(atPath: full) {
+                return full
+            }
+        }
+        // Also scan augmented PATH dirs
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "\(NSHomeDirectory())/.local/bin"] {
+            let full = "\(dir)/claude-code-proxy"
+            if FileManager.default.isExecutableFile(atPath: full) {
+                return full
+            }
+        }
+        return nil
+    }
+
+    /// PIDs listening on TCP port (via `lsof`, standard on macOS).
+    private func listenerPIDs(port: UInt16) -> [Int] {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        // -nP numeric, -iTCP:port, -sTCP:LISTEN, -t PIDs only
+        proc.arguments = ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"]
+        let out = Pipe()
+        proc.standardOutput = out
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return []
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        var pids: [Int] = []
+        for line in text.split(whereSeparator: \.isNewline) {
+            if let pid = Int(line.trimmingCharacters(in: .whitespaces)) {
+                pids.append(pid)
+            }
+        }
+        return Array(Set(pids)).sorted()
     }
 
     func refresh() async {
@@ -135,6 +420,7 @@ final class UsageViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         reloadProviders()
+        refreshProxyStatus()
 
         async let grokResult = fetchGrok()
         async let dsResult = fetchDeepSeek()

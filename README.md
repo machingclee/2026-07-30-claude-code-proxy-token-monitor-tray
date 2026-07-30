@@ -148,6 +148,7 @@ The tray does **not** search the disk for CC Switch. It uses the **same fixed la
 | **Activate** | Write `~/.claude/settings.json` from that CC Switch provider; update tray icon |
 | After Activate | **Restart Claude Code** so it picks up the new env |
 | Refresh / `⌘R` | Manual refetch |
+| **Launch at login** | Toggle in the panel (macOS Login Items via SMAppService) |
 | Quit / `⌘Q` | Exit |
 
 ---
