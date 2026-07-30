@@ -78,6 +78,7 @@ struct ContentView: View {
         }
         .padding(14)
         .frame(width: 360)
+        .menuBarPanelFade(fadeIn: 0.18, fadeOut: 0.22)
         .onAppear { model.setPanelOpen(true) }
         .onDisappear { model.setPanelOpen(false) }
     }
