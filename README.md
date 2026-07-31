@@ -17,6 +17,135 @@ macOS **menu bar** app for SuperGrok usage, multi-account Grok login, DeepSeek b
 
 ---
 
+## Get the project and build
+
+This is a **Swift Package** macOS menu-bar app. You need Apple’s command-line tools (Swift 5.9+), not a full Xcode *project* file—though installing Xcode or CLT is required so `swift` exists.
+
+### 1. Prerequisites
+
+| Requirement | How to check / install |
+| --- | --- |
+| **macOS 13+** | System Settings → General → About |
+| **Xcode Command Line Tools** (Swift toolchain) | `xcode-select -p` — if missing: `xcode-select --install` |
+| **Swift 5.9+** | `swift --version` |
+| Optional: **Homebrew** | For `claude-code-proxy` only |
+
+Confirm tools:
+
+```bash
+xcode-select -p          # e.g. /Library/Developer/CommandLineTools or …/Xcode.app/…
+swift --version          # Apple Swift version 5.9 or newer
+```
+
+If `swift` is not found, install CLT (or Xcode from the App Store), then open a **new** terminal window.
+
+### 2. Get the source
+
+**Clone** (replace with your real remote URL):
+
+```bash
+git clone <repository-url> token-monitor-tray
+cd token-monitor-tray
+```
+
+**Or** open a zip / copy of the folder:
+
+```bash
+cd /path/to/the-project
+ls Scripts/build-app.sh Package.swift Sources/TokenMonitorTray
+# all three should exist
+```
+
+### 3. Build the `.app` (recommended)
+
+From the **repo root**:
+
+```bash
+chmod +x Scripts/build-app.sh   # once, if needed
+./Scripts/build-app.sh
+```
+
+What the script does:
+
+1. `swift build -c release --product TokenMonitorTray`
+2. Assembles **`~/Applications/Claude-Code-Proxy Token Monitor Tray.app`**
+3. Ad-hoc codesigns the bundle
+4. Installs **`~/.local/bin/token-monitor-tray`** (and a `gm-tray` alias that calls it)
+
+Then start it:
+
+```bash
+open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
+# or, if ~/.local/bin is on your PATH:
+token-monitor-tray
+```
+
+Look in the **menu bar** (not the Dock).
+
+#### Install location options
+
+| Command | Output |
+| --- | --- |
+| `./Scripts/build-app.sh` | `~/Applications/Claude-Code-Proxy Token Monitor Tray.app` |
+| `./Scripts/build-app.sh "/Applications"` | `/Applications/…` (system-wide; may need write permission) |
+| `./Scripts/build-app.sh "/path/to/dir"` | That directory + app name |
+
+#### First open blocked by Gatekeeper
+
+Ad-hoc signed local builds are often blocked once:
+
+```bash
+xattr -cr "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
+open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
+```
+
+Or Finder: right-click the app → **Open** → Open.
+
+### 4. Dev run (no `.app`, faster iteration)
+
+```bash
+cd /path/to/the-project
+swift run TokenMonitorTray
+```
+
+Useful while coding. **Launch at login** and some path edge cases work more reliably from the built `.app` via `./Scripts/build-app.sh`.
+
+### 5. Optional runtime tools
+
+| Tool | Needed for |
+| --- | --- |
+| `grok` CLI (`grok login`) | Grok usage, multi-account, Grok login button |
+| `claude-code-proxy` | Launch/Stop proxy buttons (`brew install claude-code-proxy`) |
+| DeepSeek API key | Entered in the tray (or `DEEPSEEK_API_KEY`) |
+
+None of these are required **to compile** the tray—only to use the matching features after install.
+
+### 6. Share a prebuilt zip
+
+```bash
+./Scripts/build-app.sh
+cd ~/Applications
+ditto -c -k --sequesterRsrc --keepParent \
+  "Claude-Code-Proxy Token Monitor Tray.app" \
+  ~/Desktop/Claude-Code-Proxy-Token-Monitor-Tray.zip
+```
+
+Recipient: unzip → move to Applications → open (if blocked: right-click Open, or `xattr -dr com.apple.quarantine` on the app).  
+**Apple Silicon** zips are arm64; **Intel** Macs should rebuild from source on that machine.
+
+### Requirements (summary)
+
+| Item | Notes |
+| --- | --- |
+| macOS 13+ | MenuBarExtra |
+| Swift 5.9+ / Xcode CLT | Build |
+| Grok usage / multi-account | `grok` CLI after install |
+| DeepSeek balance / Activate | Tray-local API key (or env) |
+| Claude method switch | Writes `~/.claude/settings.json` |
+| Launch proxy | Optional Homebrew binary |
+
+---
+
 ## Features (current)
 
 ### UI
@@ -243,135 +372,6 @@ rm -f ~/.grok/profiles/*.json
 rm -f ~/.config/claude-code-proxy/grok/auth.json \
       ~/.config/claude-code-proxy/grok/auth.backup.json
 ```
-
----
-
-## Get the project and build
-
-This is a **Swift Package** macOS menu-bar app. You need Apple’s command-line tools (Swift 5.9+), not a full Xcode *project* file—though installing Xcode or CLT is required so `swift` exists.
-
-### 1. Prerequisites
-
-| Requirement | How to check / install |
-| --- | --- |
-| **macOS 13+** | System Settings → General → About |
-| **Xcode Command Line Tools** (Swift toolchain) | `xcode-select -p` — if missing: `xcode-select --install` |
-| **Swift 5.9+** | `swift --version` |
-| Optional: **Homebrew** | For `claude-code-proxy` only |
-
-Confirm tools:
-
-```bash
-xcode-select -p          # e.g. /Library/Developer/CommandLineTools or …/Xcode.app/…
-swift --version          # Apple Swift version 5.9 or newer
-```
-
-If `swift` is not found, install CLT (or Xcode from the App Store), then open a **new** terminal window.
-
-### 2. Get the source
-
-**Clone** (replace with your real remote URL):
-
-```bash
-git clone <repository-url> token-monitor-tray
-cd token-monitor-tray
-```
-
-**Or** open a zip / copy of the folder:
-
-```bash
-cd /path/to/the-project
-ls Scripts/build-app.sh Package.swift Sources/TokenMonitorTray
-# all three should exist
-```
-
-### 3. Build the `.app` (recommended)
-
-From the **repo root**:
-
-```bash
-chmod +x Scripts/build-app.sh   # once, if needed
-./Scripts/build-app.sh
-```
-
-What the script does:
-
-1. `swift build -c release --product TokenMonitorTray`
-2. Assembles **`~/Applications/Claude-Code-Proxy Token Monitor Tray.app`**
-3. Ad-hoc codesigns the bundle
-4. Installs **`~/.local/bin/token-monitor-tray`** (and a `gm-tray` alias that calls it)
-
-Then start it:
-
-```bash
-open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
-# or, if ~/.local/bin is on your PATH:
-token-monitor-tray
-```
-
-Look in the **menu bar** (not the Dock).
-
-#### Install location options
-
-| Command | Output |
-| --- | --- |
-| `./Scripts/build-app.sh` | `~/Applications/Claude-Code-Proxy Token Monitor Tray.app` |
-| `./Scripts/build-app.sh "/Applications"` | `/Applications/…` (system-wide; may need write permission) |
-| `./Scripts/build-app.sh "/path/to/dir"` | That directory + app name |
-
-#### First open blocked by Gatekeeper
-
-Ad-hoc signed local builds are often blocked once:
-
-```bash
-xattr -cr "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
-open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
-```
-
-Or Finder: right-click the app → **Open** → Open.
-
-### 4. Dev run (no `.app`, faster iteration)
-
-```bash
-cd /path/to/the-project
-swift run TokenMonitorTray
-```
-
-Useful while coding. **Launch at login** and some path edge cases work more reliably from the built `.app` via `./Scripts/build-app.sh`.
-
-### 5. Optional runtime tools
-
-| Tool | Needed for |
-| --- | --- |
-| `grok` CLI (`grok login`) | Grok usage, multi-account, Grok login button |
-| `claude-code-proxy` | Launch/Stop proxy buttons (`brew install claude-code-proxy`) |
-| DeepSeek API key | Entered in the tray (or `DEEPSEEK_API_KEY`) |
-
-None of these are required **to compile** the tray—only to use the matching features after install.
-
-### 6. Share a prebuilt zip
-
-```bash
-./Scripts/build-app.sh
-cd ~/Applications
-ditto -c -k --sequesterRsrc --keepParent \
-  "Claude-Code-Proxy Token Monitor Tray.app" \
-  ~/Desktop/Claude-Code-Proxy-Token-Monitor-Tray.zip
-```
-
-Recipient: unzip → move to Applications → open (if blocked: right-click Open, or `xattr -dr com.apple.quarantine` on the app).  
-**Apple Silicon** zips are arm64; **Intel** Macs should rebuild from source on that machine.
-
-### Requirements (summary)
-
-| Item | Notes |
-| --- | --- |
-| macOS 13+ | MenuBarExtra |
-| Swift 5.9+ / Xcode CLT | Build |
-| Grok usage / multi-account | `grok` CLI after install |
-| DeepSeek balance / Activate | Tray-local API key (or env) |
-| Claude method switch | Writes `~/.claude/settings.json` |
-| Launch proxy | Optional Homebrew binary |
 
 ---
 
