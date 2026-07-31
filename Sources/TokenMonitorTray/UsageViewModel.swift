@@ -191,7 +191,8 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Best-effort: point Claude at local Grok proxy after Grok Activate (inactivates DeepSeek method).
+    /// Point Claude at local Grok proxy after Grok Activate.
+    /// Always leaves **only** `ANTHROPIC_AUTH_TOKEN` (never also `ANTHROPIC_API_KEY`).
     private func applyGrokClaudeSettingsIfPossible() throws {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/settings.json")
@@ -202,20 +203,17 @@ final class UsageViewModel: ObservableObject {
         }
         var env = (root["env"] as? [String: Any]) ?? [:]
         env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:18765"
-        // Keep a dummy token if missing — proxy uses its own Grok auth file.
-        if (env["ANTHROPIC_AUTH_TOKEN"] as? String)?.isEmpty != false {
-            env["ANTHROPIC_AUTH_TOKEN"] = "unused"
-        }
+        // claude-code-proxy authenticates to Grok itself; Claude Code only needs a placeholder.
+        env["ANTHROPIC_AUTH_TOKEN"] = "unused"
+        // Critical: dual auth vars trigger Claude Code warning even on Grok/proxy.
+        env.removeValue(forKey: "ANTHROPIC_API_KEY")
         for k in [
             "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
             "ANTHROPIC_SMALL_FAST_MODEL",
         ] {
-            if env[k] == nil || "\(env[k] ?? "")".lowercased().contains("deepseek") {
-                env[k] = "grok-4.5"
-            }
+            env[k] = "grok-4.5"
         }
-        // Drop DeepSeek-specific key from live Claude env when on Grok.
         env.removeValue(forKey: "DEEPSEEK_API_KEY")
         root["env"] = env
         let dir = url.deletingLastPathComponent()
@@ -255,6 +253,15 @@ final class UsageViewModel: ObservableObject {
     /// Show Launch/Stop only when the binary exists, or something is already on :18765.
     var shouldShowClaudeCodeProxyControls: Bool {
         hasClaudeCodeProxy || isProxyRunning
+    }
+
+    /// Hide **Grok login** while weekly/monthly usage fetches successfully (auth is fine).
+    /// Show it when there is no usable session or the last fetch failed.
+    var shouldShowGrokLogin: Bool {
+        if grok != nil { return false }
+        // Avoid a flash of the button during the first load after open/Activate.
+        if isLoading && grokError == nil { return false }
+        return true
     }
 
     func reloadGrokProfiles() {
@@ -344,12 +351,14 @@ final class UsageViewModel: ObservableObject {
                 if let grokProvider = provider(for: .grok), !grokProvider.isCurrent {
                     isSwitching = true
                     defer { isSwitching = false }
+                    // May merge env from CC Switch (can reintroduce ANTHROPIC_API_KEY).
                     _ = try CCSwitchService.activate(providerId: grokProvider.id)
                     reloadProviders()
                 }
 
-                // Point Claude at Grok (proxy) so DeepSeek is no longer the live method.
-                try? applyGrokClaudeSettingsIfPossible()
+                // Always last: force Grok proxy env and ensure only ANTHROPIC_AUTH_TOKEN
+                // (never both AUTH_TOKEN + API_KEY — Claude Code warns / may mis-auth).
+                try applyGrokClaudeSettingsIfPossible()
 
                 refreshProxyStatus()
                 let wasProxy = isProxyRunning

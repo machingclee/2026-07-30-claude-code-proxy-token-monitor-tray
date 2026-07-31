@@ -377,18 +377,20 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // Grok login always available (standard `grok login`; does not require proxy).
-            Button {
-                model.openGrokProxyBrowserLogin()
-            } label: {
-                Text("Grok login")
-                    .frame(maxWidth: .infinity)
+            // Grok login only when usage cannot be fetched (no/expired auth).
+            if model.shouldShowGrokLogin {
+                Button {
+                    model.openGrokProxyBrowserLogin()
+                } label: {
+                    Text("Grok login")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .disabled(model.isLaunchingProxy || model.isSwitching || model.isSwitchingGrokAccount)
+                .help("Shown when SuperGrok usage cannot be loaded. Runs grok login; not needed while weekly/monthly fetch works.")
+                .padding(.top, 8)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
-            .disabled(model.isLaunchingProxy || model.isSwitching)
-            .help("Terminal: grok login (device-auth). Saves profile; syncs proxy auth only if useful. No claude-code-proxy required.")
-            .padding(.top, 8)
 
             // Launch/Stop only when claude-code-proxy is installed (or already running so user can Stop).
             if model.shouldShowClaudeCodeProxyControls {

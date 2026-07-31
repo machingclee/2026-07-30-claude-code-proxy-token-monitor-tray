@@ -183,20 +183,18 @@ enum DeepSeekConfigStore {
         var env = (root["env"] as? [String: Any]) ?? [:]
 
         // Claude Code Anthropic-compatible env for DeepSeek.
+        // Use only ANTHROPIC_AUTH_TOKEN — setting both AUTH_TOKEN and API_KEY makes
+        // Claude Code warn: "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set".
         env["ANTHROPIC_BASE_URL"] = baseURL
         env["ANTHROPIC_AUTH_TOKEN"] = key
-        env["ANTHROPIC_API_KEY"] = key
+        env.removeValue(forKey: "ANTHROPIC_API_KEY")
         env["ANTHROPIC_MODEL"] = model
         env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
         env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
         env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
         env["ANTHROPIC_SMALL_FAST_MODEL"] = model
+        // Keep DEEPSEEK_API_KEY for tray balance fetch / non-Claude tools only.
         env["DEEPSEEK_API_KEY"] = key
-        // Avoid leftover Grok proxy URL when switching from Grok.
-        if let b = env["ANTHROPIC_BASE_URL"] as? String,
-           b.contains("18765") || b.contains("localhost") || b.contains("127.0.0.1") {
-            env["ANTHROPIC_BASE_URL"] = baseURL
-        }
 
         root["env"] = env
 
