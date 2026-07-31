@@ -8,83 +8,91 @@ struct ContentView: View {
     /// Subscription renew editor shown only after Update.
     @State private var editingSubscriptionRenew = false
 
+    /// Fixed panel size so expand/collapse does not resize the MenuBarExtra window
+    /// (height changes otherwise re-anchor the panel and it jumps up/across the screen).
+    private let panelWidth: CGFloat = 420
+    private let panelHeight: CGFloat = 560
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            Divider()
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                Divider()
 
-            if model.grok == nil && model.deepseek == nil
-                && model.grokError == nil && model.deepseekError == nil
-                && model.isLoading {
-                HStack {
-                    ProgressView()
-                        .controlSize(.regular)
-                    Text("Loading usage…")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                collapsibleUsage(
-                    id: "usage:grok",
-                    title: "Grok",
-                    icon: .grok,
-                    summary: model.grokMenuLabel,
-                    error: model.grokError,
-                    provider: model.provider(for: .grok)
-                ) {
-                    // Accounts → Save (if needed) → Activate / proxy → usage.
-                    grokAccountsSection
-                    if let snap = model.grok {
-                        weeklySection(snap)
-                        monthlySection(snap)
-                    } else if model.grokError == nil {
-                        Text("Loading…").font(.body).foregroundStyle(.secondary)
-                    }
-                }
-
-                collapsibleUsage(
-                    id: "usage:deepseek",
-                    title: "DeepSeek",
-                    icon: .deepseek,
-                    summary: model.deepseekMenuLabel,
-                    error: model.deepseekError,
-                    provider: model.provider(for: .deepseek)
-                ) {
-                    deepseekLocalSection
-                    if let snap = model.deepseek {
-                        deepseekSection(snap)
-                    } else if model.deepseekError == nil {
-                        Text("Save an API key below, then Refresh.")
-                            .font(.body)
+                if model.grok == nil && model.deepseek == nil
+                    && model.grokError == nil && model.deepseekError == nil
+                    && model.isLoading {
+                    HStack {
+                        ProgressView()
+                            .controlSize(.regular)
+                        Text("Loading usage…")
                             .foregroundStyle(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    collapsibleUsage(
+                        id: "usage:grok",
+                        title: "Grok",
+                        icon: .grok,
+                        summary: model.grokMenuLabel,
+                        error: model.grokError,
+                        provider: model.provider(for: .grok)
+                    ) {
+                        // Accounts → Save (if needed) → Activate / proxy → usage.
+                        grokAccountsSection
+                        if let snap = model.grok {
+                            weeklySection(snap)
+                            monthlySection(snap)
+                        } else if model.grokError == nil {
+                            Text("Loading…").font(.body).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    collapsibleUsage(
+                        id: "usage:deepseek",
+                        title: "DeepSeek",
+                        icon: .deepseek,
+                        summary: model.deepseekMenuLabel,
+                        error: model.deepseekError,
+                        provider: model.provider(for: .deepseek)
+                    ) {
+                        deepseekLocalSection
+                        if let snap = model.deepseek {
+                            deepseekSection(snap)
+                        } else if model.deepseekError == nil {
+                            Text("Save an API key below, then Refresh.")
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-            }
 
-            if let msg = model.switchMessage {
-                Text(msg)
-                    .font(.body)
-                    .foregroundStyle(
-                        msg.contains("Activated") || msg.contains("Already")
-                            ? Color.secondary : Color.orange
-                    )
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                if let msg = model.switchMessage {
+                    Text(msg)
+                        .font(.body)
+                        .foregroundStyle(
+                            msg.contains("Activated") || msg.contains("Already")
+                                ? Color.secondary : Color.orange
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-            if let err = model.providersError {
-                Text(err)
-                    .font(.body)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                if let err = model.providersError {
+                    Text(err)
+                        .font(.body)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-            Divider()
-            settingsRow
-            Divider()
-            footer
+                Divider()
+                settingsRow
+                Divider()
+                footer
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(16)
-        .frame(width: 420)
+        .frame(width: panelWidth, height: panelHeight, alignment: .top)
         .menuBarPanelFade(fadeIn: 0.18, fadeOut: 0.22)
         .onAppear { model.setPanelOpen(true) }
         .onDisappear { model.setPanelOpen(false) }
@@ -182,6 +190,7 @@ struct ContentView: View {
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .animation(.easeInOut(duration: 0.15), value: expanded)
                         .frame(width: 12)
 
                     providerIcon(icon)
@@ -424,14 +433,13 @@ struct ContentView: View {
     }
 
     private func toggle(_ id: String) {
-        withAnimation(.easeInOut(duration: 0.15)) {
-            if expandedIds.contains(id) {
-                // Collapse only this section.
-                expandedIds.remove(id)
-            } else {
-                // Accordion: open this one, collapse everything else (Grok vs DeepSeek).
-                expandedIds = [id]
-            }
+        // No withAnimation on the expand set — animating height changes makes the
+        // MenuBarExtra panel re-anchor and jump on screen. Chevron can still animate.
+        if expandedIds.contains(id) {
+            expandedIds.remove(id)
+        } else {
+            // Accordion: open this one, collapse everything else (Grok vs DeepSeek).
+            expandedIds = [id]
         }
     }
 

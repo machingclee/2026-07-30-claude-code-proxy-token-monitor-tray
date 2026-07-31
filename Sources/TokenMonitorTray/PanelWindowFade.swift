@@ -25,14 +25,18 @@ struct PanelWindowFade: NSViewRepresentable {
 
         private var resignObserver: NSObjectProtocol?
         private var becomeObserver: NSObjectProtocol?
+        private var frameObserver: NSObjectProtocol?
         private var attachedWindow: NSWindow?
         private var isFadingOut = false
+        /// Keep the panel’s top edge stable when AppKit resizes the MenuBarExtra window.
+        private var lockedTopY: CGFloat?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             detachObservers()
             guard let window else { return }
             attachedWindow = window
+            lockedTopY = window.frame.maxY
             attachObservers(to: window)
             // Fresh open: start transparent then fade in.
             if window.alphaValue > 0.99 || window.alphaValue == 1 {
@@ -59,8 +63,31 @@ struct PanelWindowFade: NSViewRepresentable {
                 object: window,
                 queue: .main
             ) { [weak self] _ in
+                self?.lockedTopY = window.frame.maxY
                 self?.fadeIn(window)
             }
+            // If the system still resizes/repositions, re-pin the top under the menu bar.
+            frameObserver = center.addObserver(
+                forName: NSWindow.didResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reanchorTop(window)
+            }
+        }
+
+        private func reanchorTop(_ window: NSWindow) {
+            guard let top = lockedTopY else {
+                lockedTopY = window.frame.maxY
+                return
+            }
+            var frame = window.frame
+            let newTop = frame.maxY
+            if abs(newTop - top) < 0.5 { return }
+            // Keep top Y fixed; adjust origin.y so content grows/shrinks downward only.
+            frame.origin.y = top - frame.size.height
+            // Avoid horizontal drift if AppKit also shifted x.
+            window.setFrame(frame, display: false)
         }
 
         private func detachObservers() {
@@ -73,8 +100,13 @@ struct PanelWindowFade: NSViewRepresentable {
                 center.removeObserver(becomeObserver)
                 self.becomeObserver = nil
             }
+            if let frameObserver {
+                center.removeObserver(frameObserver)
+                self.frameObserver = nil
+            }
             attachedWindow = nil
             isFadingOut = false
+            lockedTopY = nil
         }
 
         private func fadeIn(_ window: NSWindow) {
