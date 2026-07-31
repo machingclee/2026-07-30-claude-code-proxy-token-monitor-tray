@@ -204,7 +204,7 @@ enum DeepSeekConfigStore {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Backup
         if FileManager.default.fileExists(atPath: claudeSettingsURL.path) {
-            let bak = dir.appendingPathComponent("settings.backup-gm-tray.json")
+            let bak = dir.appendingPathComponent("settings.backup-token-monitor-tray.json")
             try? FileManager.default.removeItem(at: bak)
             try? FileManager.default.copyItem(at: claudeSettingsURL, to: bak)
         }

@@ -7,7 +7,7 @@ enum UsageService {
 
     private static let clientHeaders: [String: String] = [
         "Accept": "application/json",
-        "User-Agent": "gm-tray/1.0 (grok-monitor)",
+        "User-Agent": "TokenMonitorTray/1.0 (grok-monitor)",
         "x-grok-client-identifier": "xai-grok-cli",
         "x-grok-client-version": "0.2.103",
         "x-grok-client-mode": "cli",

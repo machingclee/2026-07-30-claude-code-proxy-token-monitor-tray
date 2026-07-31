@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 @main
-struct GMTrayApp: App {
+struct TokenMonitorTrayApp: App {
     @StateObject private var model = UsageViewModel()
 
     init() {

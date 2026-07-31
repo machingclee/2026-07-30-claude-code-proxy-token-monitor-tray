@@ -5,8 +5,10 @@ import Foundation
 /// (`billingPeriodEnd` / “續訂”). We store one anchor per account and roll
 /// it forward by whole months for the next renew after “now”.
 enum SubscriptionRenewStore {
-    private static let mapKey = "gm-tray.subscriptionRenewAnchorsByEmail"
-    /// Legacy single-account key (migrated once into the map).
+    private static let mapKey = "token-monitor-tray.subscriptionRenewAnchorsByEmail"
+    /// Pre-rename map key (GMTray era).
+    private static let legacyMapKey = "gm-tray.subscriptionRenewAnchorsByEmail"
+    /// Pre-rename single-account key.
     private static let legacyKey = "gm-tray.subscriptionRenewAnchor"
 
     private static let isoDay: DateFormatter = {
@@ -23,15 +25,27 @@ enum SubscriptionRenewStore {
     }
 
     private static func loadMap() -> [String: String] {
-        (UserDefaults.standard.dictionary(forKey: mapKey) as? [String: String]) ?? [:]
+        migrateMapKeyIfNeeded()
+        return (UserDefaults.standard.dictionary(forKey: mapKey) as? [String: String]) ?? [:]
     }
 
     private static func saveMap(_ map: [String: String]) {
         UserDefaults.standard.set(map, forKey: mapKey)
     }
 
+    /// Move renew map from gm-tray.* keys to token-monitor-tray.* once.
+    private static func migrateMapKeyIfNeeded() {
+        let defaults = UserDefaults.standard
+        if defaults.dictionary(forKey: mapKey) != nil { return }
+        if let old = defaults.dictionary(forKey: legacyMapKey) as? [String: String], !old.isEmpty {
+            defaults.set(old, forKey: mapKey)
+            defaults.removeObject(forKey: legacyMapKey)
+        }
+    }
+
     /// Migrate legacy global anchor into the current account if needed.
     static func migrateLegacyIfNeeded(for email: String?) {
+        migrateMapKeyIfNeeded()
         guard let email, !email.isEmpty else { return }
         guard let legacy = UserDefaults.standard.string(forKey: legacyKey), !legacy.isEmpty else {
             return

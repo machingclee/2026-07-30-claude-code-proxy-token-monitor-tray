@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "GMTray",
+    name: "TokenMonitorTray",
     platforms: [
         .macOS(.v13),
     ],
     products: [
-        .executable(name: "GMTray", targets: ["GMTray"]),
+        .executable(name: "TokenMonitorTray", targets: ["TokenMonitorTray"]),
     ],
     targets: [
         .executableTarget(
-            name: "GMTray",
-            path: "Sources/GMTray",
+            name: "TokenMonitorTray",
+            path: "Sources/TokenMonitorTray",
             resources: [
                 .process("Resources"),
             ]

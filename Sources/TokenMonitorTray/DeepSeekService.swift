@@ -206,7 +206,7 @@ enum DeepSeekService {
         var request = URLRequest(url: balanceURL, timeoutInterval: 20)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("gm-tray/1.0 (deepseek-monitor)", forHTTPHeaderField: "User-Agent")
+        request.setValue("TokenMonitorTray/1.0 (deepseek-monitor)", forHTTPHeaderField: "User-Agent")
         request.setValue("Bearer \(auth.token)", forHTTPHeaderField: "Authorization")
 
         let data: Data

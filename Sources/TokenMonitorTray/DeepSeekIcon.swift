@@ -45,12 +45,12 @@ enum DeepSeekIcon {
 
     private static func resourceURL(name: String, ext: String) -> URL? {
         // Prefer Bundle.main (packaged .app). Avoid relying on Bundle.module alone —
-        // SPM looks for GMTray_GMTray.bundle at the .app root, which breaks codesign.
+        // SPM looks for TokenMonitorTray_TokenMonitorTray.bundle at the .app root, which breaks codesign.
         if let url = Bundle.main.url(forResource: name, withExtension: ext) {
             return url
         }
         if let res = Bundle.main.resourceURL {
-            let nested = res.appendingPathComponent("GMTray_GMTray.bundle/\(name).\(ext)")
+            let nested = res.appendingPathComponent("TokenMonitorTray_TokenMonitorTray.bundle/\(name).\(ext)")
             if FileManager.default.fileExists(atPath: nested.path) { return nested }
         }
         if let url = Bundle.module.url(forResource: name, withExtension: ext) {
@@ -66,10 +66,10 @@ enum DeepSeekIcon {
         roots.append(Bundle.main.bundleURL)
 
         let relative = [
-            "GMTray_GMTray.bundle/\(name).\(ext)",
+            "TokenMonitorTray_TokenMonitorTray.bundle/\(name).\(ext)",
             "Contents/Resources/\(name).\(ext)",
-            "Contents/Resources/GMTray_GMTray.bundle/\(name).\(ext)",
-            "Contents/MacOS/GMTray_GMTray.bundle/\(name).\(ext)",
+            "Contents/Resources/TokenMonitorTray_TokenMonitorTray.bundle/\(name).\(ext)",
+            "Contents/MacOS/TokenMonitorTray_TokenMonitorTray.bundle/\(name).\(ext)",
             "Resources/\(name).\(ext)",
             "\(name).\(ext)",
         ]
