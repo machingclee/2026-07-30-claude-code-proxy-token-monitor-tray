@@ -138,6 +138,57 @@ enum UsageService {
         (try? loadToken()) != nil
     }
 
+    /// Load token from `~/.grok/auth.json` only (not proxy auth).
+    static func loadCLIToken() throws -> Auth {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let grokAuth = home.appendingPathComponent(".grok/auth.json")
+        guard let data = try? Data(contentsOf: grokAuth),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw UsageError.noAuth
+        }
+        for (_, value) in obj {
+            guard let entry = value as? [String: Any] else { continue }
+            if let token = stringValue(entry["key"])
+                ?? stringValue(entry["access_token"])
+                ?? stringValue(entry["access"]) {
+                let email = stringValue(entry["email"])
+                    ?? stringValue(entry["user_id"])
+                    ?? "grok-cli"
+                return Auth(token: token, source: "~/.grok/auth.json (\(email))")
+            }
+        }
+        throw UsageError.noAuth
+    }
+
+    /// Live check: GET billing API with the active CLI token.
+    /// Success ⇒ tokens work; 401/403 ⇒ need Grok login; other errors are network/API noise.
+    enum LiveAuthStatus: Equatable {
+        case ok(email: String)
+        case authFailed(status: Int, email: String?)
+        case noAuth
+        case networkOrOther(String)
+    }
+
+    static func probeCLIAuthLive() async -> LiveAuthStatus {
+        let auth: Auth
+        do {
+            auth = try loadCLIToken()
+        } catch {
+            return .noAuth
+        }
+        let email = GrokAccountStore.activeEmail()
+        do {
+            _ = try await getJSON(url: billingCredits, token: auth.token)
+            return .ok(email: email ?? "ok")
+        } catch let UsageError.http(code, _) where code == 401 || code == 403 {
+            return .authFailed(status: code, email: email)
+        } catch let e as UsageError {
+            return .networkOrOther(e.errorDescription ?? "\(e)")
+        } catch {
+            return .networkOrOther(error.localizedDescription)
+        }
+    }
+
     // MARK: - Fetch
 
     static func fetchSnapshot() async throws -> Snapshot {

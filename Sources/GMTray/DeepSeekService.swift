@@ -58,7 +58,7 @@ enum DeepSeekService {
         var errorDescription: String? {
             switch self {
             case .noAuth:
-                return "No DeepSeek API key in CC Switch.\nAdd a DeepSeek Claude provider in CC Switch (or set DEEPSEEK_API_KEY)."
+                return "No DeepSeek API key.\nEnter one under DeepSeek in the tray (saved under Application Support), or set DEEPSEEK_API_KEY."
             case .http(let code, let body):
                 if code == 401 || code == 403 {
                     return "DeepSeek auth failed (\(code)). Check the API key.\n\(body)"
@@ -72,9 +72,17 @@ enum DeepSeekService {
         }
     }
 
-    // MARK: - Key load (same order as ds)
+    // MARK: - Key load (tray-local first; no CC Switch required)
 
     static func loadKey() throws -> Auth {
+        // 1) Tray-owned config (Application Support / product name)
+        let local = DeepSeekConfigStore.load()
+        let localKey = local.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !localKey.isEmpty {
+            return Auth(token: localKey, source: "Application Support/…/deepseek.json")
+        }
+
+        // 2) Environment
         let env = ProcessInfo.processInfo.environment
         for name in ["DEEPSEEK_API_KEY", "DEEPSEEK_TOKEN"] {
             if let v = env[name]?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty {
@@ -82,12 +90,14 @@ enum DeepSeekService {
             }
         }
 
-        if let fromDB = loadKeyFromCCSwitch() {
-            return fromDB
-        }
-
+        // 3) Live Claude settings if already on DeepSeek
         if let fromSettings = loadKeyFromClaudeSettings() {
             return fromSettings
+        }
+
+        // 4) Optional legacy CC Switch (read-only fallback)
+        if let fromDB = loadKeyFromCCSwitch() {
+            return fromDB
         }
 
         throw DSError.noAuth

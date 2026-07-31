@@ -3,7 +3,7 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var model: UsageViewModel
-    /// Sections start collapsed; click a row to expand (multiple allowed).
+    /// Sections start collapsed; expand is exclusive (Grok ↔ DeepSeek accordion).
     @State private var expandedIds: Set<String> = []
     /// Subscription renew editor shown only after Update.
     @State private var editingSubscriptionRenew = false
@@ -50,12 +50,13 @@ struct ContentView: View {
                     error: model.deepseekError,
                     provider: model.provider(for: .deepseek)
                 ) {
-                    // Activate Pro / Flash (and any other DeepSeek CC Switch providers) first.
-                    deepseekModelsSection
+                    deepseekLocalSection
                     if let snap = model.deepseek {
                         deepseekSection(snap)
                     } else if model.deepseekError == nil {
-                        Text("Loading…").font(.body).foregroundStyle(.secondary)
+                        Text("Save an API key below, then Refresh.")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -257,20 +258,19 @@ struct ContentView: View {
         kind: CCSwitchService.ProviderKind
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            // DeepSeek multi-variant: Activate lives on each Pro/Flash row above.
-            // Single DeepSeek (or Grok): keep the full-width Activate / active status.
-            if kind == .deepseek && model.deepseekProviders.count > 1 {
-                if let cur = model.currentProvider, cur.kind == .deepseek {
+            // DeepSeek: Activate lives in deepseekLocalSection (tray-owned config).
+            if kind == .deepseek {
+                if let v = model.deepseekActiveVariant {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(Color.accentColor)
                             .imageScale(.small)
-                        Text("Active: \(cur.deepseekVariantLabel) → ~/.claude/settings.json")
+                        Text("Active: DeepSeek \(v.label) → ~/.claude/settings.json")
                             .font(.body)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("Choose Pro or Flash above, then Restart Claude Code.")
+                    Text("Enter API key above, Activate Pro or Flash, then Restart Claude Code.")
                         .font(.body)
                         .foregroundStyle(.secondary)
                 }
@@ -294,10 +294,14 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
                     .disabled(model.isSwitching)
-                    .help("Write \(provider.name) into ~/.claude/settings.json (CC Switch)")
+                    .help("Write \(provider.name) into ~/.claude/settings.json")
                 }
+            } else if kind == .grok {
+                Text("Use Grok accounts Activate above.")
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
             } else {
-                Text("No matching CC Switch provider")
+                Text("No matching provider")
                     .font(.body)
                     .foregroundStyle(.tertiary)
             }
@@ -346,7 +350,7 @@ struct ContentView: View {
                             .buttonStyle(.borderedProminent)
                             .controlSize(.regular)
                             .disabled(model.isSwitchingGrokAccount || model.isSwitching)
-                            .help("Use this Grok login and activate Grok in ~/.claude/settings.json")
+                            .help("Switch to this profile, then GET usage/billing API to verify tokens. Re-login only if that fails. Restarts proxy when auth is OK and it was running.")
                         }
                     }
                 }
@@ -373,43 +377,44 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            // Proxy — Activate lives on each account row (like DeepSeek Pro/Flash).
-            // Auth: Launch syncs tray ~/.grok/auth.json → proxy auth. Browser login is separate
-            // (ccs Grok Launch used to run `grok login` every time; we only popup on demand).
+            // Grok login always available (standard `grok login`; does not require proxy).
             Button {
                 model.openGrokProxyBrowserLogin()
             } label: {
-                Text("Grok login (browser)")
+                Text("Grok login")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
             .disabled(model.isLaunchingProxy || model.isSwitching)
-            .help("Opens Terminal: claude-code-proxy grok auth login (+ optional grok login). Use when you get 402 or tokens expired.")
+            .help("Terminal: grok login (device-auth). Saves profile; syncs proxy auth only if useful. No claude-code-proxy required.")
             .padding(.top, 8)
 
-            if model.isProxyRunning {
-                Button {
-                    model.stopClaudeCodeProxy()
-                } label: {
-                    Text("Stop claude-code-proxy")
-                        .frame(maxWidth: .infinity)
+            // Launch/Stop only when claude-code-proxy is installed (or already running so user can Stop).
+            if model.shouldShowClaudeCodeProxyControls {
+                if model.isProxyRunning {
+                    Button {
+                        model.stopClaudeCodeProxy()
+                    } label: {
+                        Text("Stop claude-code-proxy")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(model.isLaunchingProxy || model.isSwitching)
+                    .help("Port 18765 is in use — stop listeners (SIGTERM)")
+                } else {
+                    Button {
+                        model.launchClaudeCodeProxy()
+                    } label: {
+                        Text("Launch claude-code-proxy")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .disabled(model.isLaunchingProxy || model.isSwitching)
+                    .help("Syncs active Grok login into proxy auth, then: claude-code-proxy serve --no-monitor")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(model.isLaunchingProxy || model.isSwitching)
-                .help("Port 18765 is in use — stop listeners (SIGTERM)")
-            } else {
-                Button {
-                    model.launchClaudeCodeProxy()
-                } label: {
-                    Text("Launch claude-code-proxy")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(model.isLaunchingProxy || model.isSwitching)
-                .help("Syncs active Grok login into proxy auth, then: claude-code-proxy serve --no-monitor")
             }
 
             Divider().padding(.vertical, 4)
@@ -419,9 +424,11 @@ struct ContentView: View {
     private func toggle(_ id: String) {
         withAnimation(.easeInOut(duration: 0.15)) {
             if expandedIds.contains(id) {
+                // Collapse only this section.
                 expandedIds.remove(id)
             } else {
-                expandedIds.insert(id)
+                // Accordion: open this one, collapse everything else (Grok vs DeepSeek).
+                expandedIds = [id]
             }
         }
     }
@@ -553,61 +560,128 @@ struct ContentView: View {
         }
     }
 
-    /// Activate among CC Switch DeepSeek providers (e.g. V4 Pro vs V4 Flash).
-    /// Every non-active row is **Activate** (never "Switch").
-    private var deepseekModelsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("DeepSeek model")
+    /// Tray-local DeepSeek config + Activate (no CC Switch).
+    private var deepseekLocalSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("DeepSeek (local config)")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
 
-            let list = model.deepseekProviders
-            if list.isEmpty {
-                Text("No DeepSeek provider in CC Switch. Add Pro / Flash there, then Refresh.")
+            Text("Stored under Application Support for this app — not CC Switch, not ~/.grok.")
+                .font(.body)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("API key")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Group {
+                        if model.showDeepSeekKey {
+                            TextField("sk-…", text: $model.deepseekAPIKeyDraft)
+                        } else {
+                            SecureField("sk-…", text: $model.deepseekAPIKeyDraft)
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                    Button {
+                        model.showDeepSeekKey.toggle()
+                    } label: {
+                        Image(systemName: model.showDeepSeekKey ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(model.showDeepSeekKey ? "Hide key" : "Show key")
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Base URL (Claude Code)")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                TextField("https://api.deepseek.com", text: $model.deepseekBaseURLDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+            }
+
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Pro model")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    TextField("deepseek-v4-pro[1m]", text: $model.deepseekProModelDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Flash model")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    TextField("deepseek-v4-flash[1m]", text: $model.deepseekFlashModelDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body)
+                }
+            }
+
+            Button {
+                model.saveDeepSeekConfigFromDrafts()
+            } label: {
+                Text("Save DeepSeek config")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+
+            Text("Activate for Claude Code")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+
+            ForEach(DeepSeekConfigStore.Variant.allCases) { variant in
+                HStack(spacing: 6) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(variant.label)
+                                .font(.body.weight(.medium))
+                            if model.isDeepSeekVariantActive(variant) {
+                                Text("active")
+                                    .font(.body)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor.opacity(0.15))
+                                    .foregroundStyle(Color.accentColor)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        Text(variant == .pro ? model.deepseekProModelDraft : model.deepseekFlashModelDraft)
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    if model.isDeepSeekVariantActive(variant) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(Color.accentColor)
+                            .symbolRenderingMode(.hierarchical)
+                    } else {
+                        Button("Activate") {
+                            model.activateDeepSeek(variant: variant)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .disabled(model.isActivatingDeepSeek || model.isSwitching)
+                        .help("Write DeepSeek \(variant.label) into ~/.claude/settings.json (no CC Switch)")
+                    }
+                }
+            }
+
+            if let msg = model.deepseekConfigMessage {
+                Text(msg)
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ForEach(list) { p in
-                    HStack(spacing: 6) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            HStack(spacing: 6) {
-                                Text(p.deepseekVariantLabel)
-                                    .font(.body.weight(.medium))
-                                    .lineLimit(1)
-                                if p.isCurrent {
-                                    Text("active")
-                                        .font(.body)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 1)
-                                        .background(Color.accentColor.opacity(0.15))
-                                        .foregroundStyle(Color.accentColor)
-                                        .clipShape(Capsule())
-                                }
-                            }
-                            Text(p.shortModel)
-                                .font(.body)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .help(p.name)
-                        }
-                        Spacer(minLength: 4)
-                        if p.isCurrent {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(Color.accentColor)
-                                .symbolRenderingMode(.hierarchical)
-                        } else {
-                            Button("Activate") {
-                                model.activateProvider(p)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.regular)
-                            .disabled(model.isSwitching)
-                            .help("Write \(p.name) into ~/.claude/settings.json (CC Switch)")
-                        }
-                    }
-                }
             }
 
             Divider().padding(.vertical, 4)

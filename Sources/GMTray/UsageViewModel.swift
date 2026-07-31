@@ -20,6 +20,8 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var isLaunchingProxy = false
     /// True when something accepts TCP on 127.0.0.1:18765 (claude-code-proxy).
     @Published private(set) var isProxyRunning = false
+    /// True when the `claude-code-proxy` binary is on disk / PATH (hides Launch UI if false).
+    @Published private(set) var hasClaudeCodeProxy = false
 
     /// Open at Login (SMAppService).
     @Published var launchAtLogin = false
@@ -35,6 +37,16 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var activeGrokEmail: String?
     @Published var grokAccountMessage: String?
     @Published private(set) var isSwitchingGrokAccount = false
+
+    /// Local DeepSeek config (not CC Switch). Saved under Application Support for this app.
+    @Published var deepseekAPIKeyDraft = ""
+    @Published var deepseekBaseURLDraft = DeepSeekConfigStore.Config.default.anthropicBaseURL
+    @Published var deepseekProModelDraft = DeepSeekConfigStore.Variant.pro.defaultModel
+    @Published var deepseekFlashModelDraft = DeepSeekConfigStore.Variant.flash.defaultModel
+    @Published private(set) var deepseekActiveVariant: DeepSeekConfigStore.Variant?
+    @Published var deepseekConfigMessage: String?
+    @Published private(set) var isActivatingDeepSeek = false
+    @Published var showDeepSeekKey = false
 
     /// True while the menu bar panel is open (drives faster 5s polling).
     @Published var isPanelOpen = false
@@ -68,11 +80,181 @@ final class UsageViewModel: ObservableObject {
     init() {
         reloadLoginItem()
         reloadProviders()
+        refreshClaudeCodeProxyAvailability()
         refreshProxyStatus()
         reloadSubscriptionRenew()
         reloadGrokProfiles()
+        reloadDeepSeekConfig()
         Task { await refresh() }
         startBackgroundPolling()
+    }
+
+    func reloadDeepSeekConfig() {
+        let c = DeepSeekConfigStore.load()
+        // Don't overwrite a key the user is mid-editing with empty if already typing —
+        // only load when draft is empty or matches previous load.
+        deepseekAPIKeyDraft = c.apiKey
+        deepseekBaseURLDraft = c.anthropicBaseURL
+        deepseekProModelDraft = c.proModel
+        deepseekFlashModelDraft = c.flashModel
+        deepseekActiveVariant = c.activeVariant
+    }
+
+    func saveDeepSeekConfigFromDrafts() {
+        var c = DeepSeekConfigStore.load()
+        c.apiKey = deepseekAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        c.anthropicBaseURL = deepseekBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if c.anthropicBaseURL.isEmpty {
+            c.anthropicBaseURL = DeepSeekConfigStore.Config.default.anthropicBaseURL
+        }
+        c.apiBaseURL = c.anthropicBaseURL
+        c.proModel = DeepSeekConfigStore.normalizeContextTag(
+            deepseekProModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        c.flashModel = DeepSeekConfigStore.normalizeContextTag(
+            deepseekFlashModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        if c.proModel.isEmpty { c.proModel = DeepSeekConfigStore.Variant.pro.defaultModel }
+        if c.flashModel.isEmpty { c.flashModel = DeepSeekConfigStore.Variant.flash.defaultModel }
+        deepseekProModelDraft = c.proModel
+        deepseekFlashModelDraft = c.flashModel
+        do {
+            try DeepSeekConfigStore.save(c)
+            deepseekActiveVariant = c.activeVariant
+            deepseekConfigMessage =
+                "Saved DeepSeek config → Application Support/Claude-Code-Proxy Token Monitor Tray/"
+            Task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                if deepseekConfigMessage?.hasPrefix("Saved") == true {
+                    deepseekConfigMessage = nil
+                }
+            }
+            Task { await refresh(force: true) }
+        } catch {
+            deepseekConfigMessage = error.localizedDescription
+        }
+    }
+
+    /// Activate DeepSeek Pro/Flash using tray-local key (writes ~/.claude/settings.json; no CC Switch).
+    /// Inactivates the other DeepSeek variant and any Grok method (single active method).
+    func activateDeepSeek(variant: DeepSeekConfigStore.Variant) {
+        guard !isActivatingDeepSeek && !isSwitching else { return }
+        isActivatingDeepSeek = true
+        defer { isActivatingDeepSeek = false }
+
+        // Persist drafts first so Activate uses what the user just typed.
+        var c = DeepSeekConfigStore.load()
+        c.apiKey = deepseekAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        c.anthropicBaseURL = deepseekBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if c.anthropicBaseURL.isEmpty {
+            c.anthropicBaseURL = DeepSeekConfigStore.Config.default.anthropicBaseURL
+        }
+        c.apiBaseURL = c.anthropicBaseURL
+        c.proModel = DeepSeekConfigStore.normalizeContextTag(
+            deepseekProModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        c.flashModel = DeepSeekConfigStore.normalizeContextTag(
+            deepseekFlashModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        if c.proModel.isEmpty { c.proModel = DeepSeekConfigStore.Variant.pro.defaultModel }
+        if c.flashModel.isEmpty { c.flashModel = DeepSeekConfigStore.Variant.flash.defaultModel }
+        deepseekProModelDraft = c.proModel
+        deepseekFlashModelDraft = c.flashModel
+
+        do {
+            try DeepSeekConfigStore.save(c)
+            // activate(variant) sets only that variant active (Pro ↔ Flash exclusive).
+            let activated = try DeepSeekConfigStore.activate(variant: variant)
+            deepseekActiveVariant = activated.activeVariant
+
+            // Stop Grok proxy if running — Claude is no longer on Grok.
+            refreshProxyStatus()
+            if isProxyRunning {
+                stopClaudeCodeProxy()
+                refreshProxyStatus()
+            }
+
+            reloadProviders()
+            reloadGrokProfiles()
+            let modelName = activated.model(for: variant)
+            deepseekConfigMessage =
+                "Activated DeepSeek \(variant.label) (\(modelName)) · other methods inactive · Restart Claude Code"
+            Task {
+                await refresh(force: true)
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if deepseekConfigMessage?.hasPrefix("Activated DeepSeek") == true {
+                    deepseekConfigMessage = nil
+                }
+            }
+        } catch {
+            deepseekConfigMessage = error.localizedDescription
+        }
+    }
+
+    /// Best-effort: point Claude at local Grok proxy after Grok Activate (inactivates DeepSeek method).
+    private func applyGrokClaudeSettingsIfPossible() throws {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/settings.json")
+        var root: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            root = obj
+        }
+        var env = (root["env"] as? [String: Any]) ?? [:]
+        env["ANTHROPIC_BASE_URL"] = "http://127.0.0.1:18765"
+        // Keep a dummy token if missing — proxy uses its own Grok auth file.
+        if (env["ANTHROPIC_AUTH_TOKEN"] as? String)?.isEmpty != false {
+            env["ANTHROPIC_AUTH_TOKEN"] = "unused"
+        }
+        for k in [
+            "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+        ] {
+            if env[k] == nil || "\(env[k] ?? "")".lowercased().contains("deepseek") {
+                env[k] = "grok-4.5"
+            }
+        }
+        // Drop DeepSeek-specific key from live Claude env when on Grok.
+        env.removeValue(forKey: "DEEPSEEK_API_KEY")
+        root["env"] = env
+        let dir = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        let tmp = url.appendingPathExtension("tmp")
+        try data.write(to: tmp, options: .atomic)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        try FileManager.default.moveItem(at: tmp, to: url)
+    }
+
+    /// Active only if this variant is selected **and** Claude settings are on DeepSeek
+    /// (so Grok Activate clears DeepSeek active state, and vice versa).
+    func isDeepSeekVariantActive(_ variant: DeepSeekConfigStore.Variant) -> Bool {
+        deepseekActiveVariant == variant && activeKind == .deepseek
+    }
+
+    /// Clear DeepSeek “active” marker when switching away (e.g. to Grok).
+    private func clearDeepSeekActiveVariant() {
+        var c = DeepSeekConfigStore.load()
+        guard c.activeVariant != nil else {
+            deepseekActiveVariant = nil
+            return
+        }
+        c.activeVariant = nil
+        try? DeepSeekConfigStore.save(c)
+        deepseekActiveVariant = nil
+    }
+
+    /// Re-detect `claude-code-proxy` binary (Launch/Stop buttons depend on this).
+    func refreshClaudeCodeProxyAvailability() {
+        hasClaudeCodeProxy = resolveClaudeCodeProxy() != nil
+    }
+
+    /// Show Launch/Stop only when the binary exists, or something is already on :18765.
+    var shouldShowClaudeCodeProxyControls: Bool {
+        hasClaudeCodeProxy || isProxyRunning
     }
 
     func reloadGrokProfiles() {
@@ -101,20 +283,20 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Whether this Grok profile row is fully active (CLI login + CC Switch Grok provider).
+    /// Whether this Grok profile row is fully active (CLI login + Claude currently on Grok).
+    /// False when DeepSeek (or anything else) is the live Claude method.
     func isGrokAccountFullyActive(_ profile: GrokAccountStore.Profile) -> Bool {
-        profile.isActive && (provider(for: .grok)?.isCurrent == true)
+        profile.isActive && activeKind == .grok
     }
 
-    /// Activate a Grok account row (same idea as DeepSeek Pro/Flash Activate):
+    /// Activate a Grok account row:
     /// 1) switch `~/.grok/auth.json` to that profile if needed
-    /// 2) sync that login into `~/.config/claude-code-proxy/grok/auth.json` (what the proxy uses)
-    /// 3) activate the Grok CC Switch provider if Claude is not already on Grok
-    /// 4) restart proxy if it was running so upstream uses the new tokens
+    /// 2) **live** billing API probe (same as usage) — only re-login if that fails
+    /// 3) if OK: sync proxy auth, set Grok provider, restart proxy if it was running
+    /// 4) if auth expired/invalid: stop proxy, ask for Grok login (no auto re-login otherwise)
     func activateGrokAccount(profileId: String) {
         guard !isSwitchingGrokAccount && !isSwitching else { return }
         isSwitchingGrokAccount = true
-        defer { isSwitchingGrokAccount = false }
 
         let needProfileSwitch: Bool = {
             if profileId == "__active__" { return false }
@@ -126,43 +308,142 @@ final class UsageViewModel: ObservableObject {
                 try GrokAccountStore.switchTo(profileId: profileId)
                 reloadGrokProfiles()
                 grok = nil
-            } else {
-                // Profile already active as CLI login — still push into proxy auth file.
-                _ = try GrokAccountStore.syncActiveAuthToProxy()
             }
-
-            // Ensure Claude uses the Grok provider (omit separate Activate button).
-            if let grokProvider = provider(for: .grok), !grokProvider.isCurrent {
-                isSwitching = true
-                defer { isSwitching = false }
-                _ = try CCSwitchService.activate(providerId: grokProvider.id)
-                reloadProviders()
-            }
-
-            let email = GrokAccountStore.activeEmail()
-                ?? grokProfiles.first(where: { $0.id == profileId })?.email
-                ?? profileId
-            let wasProxy = isProxyRunning
-            if wasProxy {
-                // Restart so the proxy process does not keep a stale in-memory token.
-                stopClaudeCodeProxy()
-                launchClaudeCodeProxy()
-            }
-
-            grokAccountMessage = "Activated \(email) · synced to claude-code-proxy auth"
+            // Probe before treating Activate as success (do not trust expires_at alone).
+            grokAccountMessage = "Checking auth with usage API…"
             Task {
-                await refresh()
-                var msg = "Active: \(GrokAccountStore.activeEmail() ?? email) · proxy auth synced"
+                defer { isSwitchingGrokAccount = false }
+                await finishActivateGrokAccount(profileId: profileId)
+            }
+        } catch {
+            isSwitchingGrokAccount = false
+            grokAccountMessage = error.localizedDescription
+            clearGrokAccountMessageLater()
+        }
+    }
+
+    /// After profile is on disk as active: live API check → sync / re-login.
+    private func finishActivateGrokAccount(profileId: String) async {
+        let email = GrokAccountStore.activeEmail()
+            ?? grokProfiles.first(where: { $0.id == profileId })?.email
+            ?? profileId
+
+        let probe = await UsageService.probeCLIAuthLive()
+        switch probe {
+        case .ok(let probedEmail):
+            let shown = probedEmail.isEmpty ? email : probedEmail
+            do {
+                _ = try GrokAccountStore.syncActiveAuthToProxy()
+                // Keep profile file fresh after a successful switch (optional copy).
+                _ = try? GrokAccountStore.saveActiveAsProfile()
+                reloadGrokProfiles()
+
+                // Inactivate DeepSeek (Pro/Flash) — only one “method” active at a time.
+                clearDeepSeekActiveVariant()
+
+                if let grokProvider = provider(for: .grok), !grokProvider.isCurrent {
+                    isSwitching = true
+                    defer { isSwitching = false }
+                    _ = try CCSwitchService.activate(providerId: grokProvider.id)
+                    reloadProviders()
+                }
+
+                // Point Claude at Grok (proxy) so DeepSeek is no longer the live method.
+                try? applyGrokClaudeSettingsIfPossible()
+
+                refreshProxyStatus()
+                let wasProxy = isProxyRunning
+                if wasProxy {
+                    // Valid new tokens: restart so in-memory identity matches Activate.
+                    stopClaudeCodeProxy()
+                    launchClaudeCodeProxy()
+                } else if hasClaudeCodeProxy {
+                    // Prefer proxy up so Claude/Grok method is usable after switch.
+                    launchClaudeCodeProxy()
+                }
+
+                // Force a new usage fetch with the switched tokens (do not join an
+                // in-flight poll that may still be using the previous account).
+                await refresh(force: true)
+                var msg = "Active: \(shown) · usage refreshed"
+                if let g = grok {
+                    let weekly = String(format: "%.0f%%", g.weeklyPercent)
+                    let monthly: String = {
+                        if let u = g.monthlyUsed, let lim = g.monthlyLimit {
+                            return String(format: "%.0f/%.0f", u, lim)
+                        }
+                        return "—"
+                    }()
+                    msg += " · weekly \(weekly) / monthly \(monthly)"
+                }
                 if wasProxy {
                     msg += " · proxy restarted"
                 }
                 msg += " · Restart Claude Code if needed."
                 grokAccountMessage = msg
                 clearGrokAccountMessageLater()
+            } catch {
+                grokAccountMessage = error.localizedDescription
+                clearGrokAccountMessageLater()
             }
-        } catch {
-            grokAccountMessage = error.localizedDescription
+
+        case .authFailed(let status, let failedEmail):
+            let shown = failedEmail ?? email
+            refreshProxyStatus()
+            if isProxyRunning {
+                stopClaudeCodeProxy()
+                refreshProxyStatus()
+            }
+            // Still sync failed tokens so paths stay aligned; login will replace them.
+            _ = try? GrokAccountStore.syncActiveAuthToProxy()
+            grok = nil
+            grokError = "Auth failed (HTTP \(status)). Use Grok login."
+            grokAccountMessage =
+                "\(shown): auth failed (HTTP \(status)). Tokens expired or revoked — use Grok login."
+            // Leave message visible longer than usual.
+            Task {
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                if grokAccountMessage?.contains("auth failed") == true {
+                    grokAccountMessage = nil
+                }
+            }
+
+        case .noAuth:
+            refreshProxyStatus()
+            if isProxyRunning {
+                stopClaudeCodeProxy()
+                refreshProxyStatus()
+            }
+            grok = nil
+            grokError = "No ~/.grok/auth.json"
+            grokAccountMessage = "No usable ~/.grok/auth.json — use Grok login."
             clearGrokAccountMessageLater()
+
+        case .networkOrOther(let detail):
+            // Network blip: still switch/sync, then force-refresh usage anyway.
+            do {
+                _ = try GrokAccountStore.syncActiveAuthToProxy()
+                if let grokProvider = provider(for: .grok), !grokProvider.isCurrent {
+                    isSwitching = true
+                    defer { isSwitching = false }
+                    _ = try CCSwitchService.activate(providerId: grokProvider.id)
+                    reloadProviders()
+                }
+                refreshProxyStatus()
+                let wasProxy = isProxyRunning
+                if wasProxy {
+                    stopClaudeCodeProxy()
+                    // Do not auto-restart on uncertain auth — user can Launch.
+                }
+                await refresh(force: true)
+                grokAccountMessage =
+                    "Switched to \(email) but usage API check failed (not necessarily expired): \(detail)"
+                    + (wasProxy ? " · proxy stopped" : "")
+                clearGrokAccountMessageLater()
+            } catch {
+                grokAccountMessage = error.localizedDescription
+                clearGrokAccountMessageLater()
+            }
         }
     }
 
@@ -238,6 +519,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     func refreshProxyStatus() {
+        refreshClaudeCodeProxyAvailability()
         isProxyRunning = Self.isListening(port: Self.proxyPort)
     }
 
@@ -325,9 +607,40 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Active CC Switch provider kind (drives tray icon).
+    /// What the menu bar represents: prefer live Claude settings, then local DeepSeek, then CC Switch.
     var activeKind: CCSwitchService.ProviderKind {
-        currentProvider?.kind ?? .other
+        if Self.claudeSettingsLooksDeepSeek() { return .deepseek }
+        if Self.claudeSettingsLooksGrok() { return .grok }
+        if deepseekActiveVariant != nil { return .deepseek }
+        return currentProvider?.kind ?? .other
+    }
+
+    private static func claudeSettingsLooksDeepSeek() -> Bool {
+        guard let env = claudeEnv() else { return false }
+        let blob = "\(env["ANTHROPIC_BASE_URL"] ?? "") \(env["ANTHROPIC_MODEL"] ?? "")".lowercased()
+        return blob.contains("deepseek")
+    }
+
+    private static func claudeSettingsLooksGrok() -> Bool {
+        guard let env = claudeEnv() else { return false }
+        let base = (env["ANTHROPIC_BASE_URL"] ?? "").lowercased()
+        let model = (env["ANTHROPIC_MODEL"] ?? "").lowercased()
+        return base.contains("18765") || base.contains("localhost") || model.contains("grok")
+    }
+
+    private static func claudeEnv() -> [String: String]? {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/settings.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let env = obj["env"] as? [String: Any] else {
+            return nil
+        }
+        var out: [String: String] = [:]
+        for (k, v) in env {
+            if let s = v as? String { out[k] = s }
+        }
+        return out
     }
 
     /// Tray icon matches the activated Claude provider.
@@ -438,10 +751,13 @@ final class UsageViewModel: ObservableObject {
         if open {
             reloadLoginItem()
             reloadProviders()
+            refreshClaudeCodeProxyAvailability()
             refreshProxyStatus()
             reloadSubscriptionRenew()
             reloadGrokProfiles()
-            Task { await refresh() }
+            reloadDeepSeekConfig()
+            // Force re-read auth after possible external login/switch.
+            Task { await refresh(force: true) }
             startPolling()
         } else {
             stopPolling()
@@ -581,71 +897,536 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Open a real Terminal window for browser OAuth.
-    /// Uses a `.command` file + `NSWorkspace.open` (reliable from menu-bar apps).
-    /// AppleScript `osascript` often fails silently for LSUIElement apps without Automation permission.
+    /// Open Terminal for Grok OAuth using **device-code flow** + **normal Chrome**.
+    ///
+    /// Why not plain `grok auth login`?
+    /// On macOS those CLIs open the default browser via Launch Services (ignore `$BROWSER`)
+    /// and silently reuse whatever accounts.x.ai session is already signed in.
+    ///
+    /// We run device-code auth (prints a URL), then open **normal Chrome** after a quick
+    /// accounts.x.ai logout so the next step is “pick Google account” — passwords stay
+    /// saved for every Google account already signed into Chrome. No clean/incognito profile.
     func openGrokProxyBrowserLogin() {
         guard !isLaunchingProxy else { return }
 
-        let bin = resolveClaudeCodeProxy() ?? "/opt/homebrew/bin/claude-code-proxy"
         let logDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/ClaudeCodeProxyTokenMonitorTray")
         let scriptURL = logDir.appendingPathComponent("grok-login.command")
+        // Keep historical filenames so old Terminal windows still find helpers if rewritten.
+        let browserHelperURL = logDir.appendingPathComponent("open-incognito-browser.sh")
+        let deviceLoginURL = logDir.appendingPathComponent("run-device-login-incognito.py")
+        let saveProfileURL = logDir.appendingPathComponent("save-grok-profile-after-login.py")
 
-        // Shell-escape single quotes for embedding in a single-quoted zsh string if needed;
-        // path is written into a file, so only need basic safety.
-        let shellBody = """
+        // Browser helper: ONLY open a single URL in the real Chrome profile.
+        // Multi-step OAuth (logout → chooser → wait for Return → device URL) is
+        // orchestrated by run-device-login so we can block on the Terminal TTY.
+        // Optional: GROK_OAUTH_CLEAN=1 → temporary empty Chrome profile.
+        let browserHelper = #"""
+        #!/bin/zsh
+        # Open $1 in YOUR real Chrome profile (last_used from Local State).
+        set +e
+        URL="${1:-}"
+        if [[ -z "$URL" ]]; then
+          echo "open-oauth-browser: missing URL" >&2
+          exit 2
+        fi
+
+        temp_oauth_chrome_pids() {
+          ps -axo pid=,command= 2>/dev/null | awk '
+            /Google Chrome\.app\/Contents\// && /user-data-dir=/ && /grok-oauth-chrome/ { print $1 }
+          '
+        }
+        real_chrome_main_pids() {
+          ps -axo pid=,command= 2>/dev/null | awk '
+            /Google Chrome\.app\/Contents\/MacOS\/Google Chrome/ && $0 !~ /user-data-dir=/ { print $1 }
+            /Google Chrome\.app\/Contents\/MacOS\/Google Chrome/ && /Application Support\/Google\/Chrome/ { print $1 }
+          '
+        }
+        kill_temp_oauth_chromes() {
+          local pids
+          pids="$(temp_oauth_chrome_pids)"
+          if [[ -n "$pids" ]]; then
+            echo "→ Force-closing leftover temp OAuth Chrome…" >&2
+            # shellcheck disable=SC2086
+            kill -9 $pids 2>/dev/null || true
+            sleep 0.3
+          fi
+        }
+        kill_temp_oauth_chromes
+
+        resolve_chrome_profile_dir() {
+          python3 -c 'import json;from pathlib import Path;p=Path.home()/"Library/Application Support/Google/Chrome/Local State";d=json.loads(p.read_text()) if p.exists() else {};last=(d.get("profile") or {}).get("last_used") or "Default";print(last if last=="Default" or str(last).startswith("Profile ") else "Default")' 2>/dev/null || echo Default
+        }
+        CHROME_PROFILE="$(resolve_chrome_profile_dir)"
+        [[ -n "$CHROME_PROFILE" ]] || CHROME_PROFILE="Default"
+
+        if [[ "${GROK_OAUTH_CLEAN:-0}" == "1" ]]; then
+          echo "→ GROK_OAUTH_CLEAN=1: temporary Chrome profile" >&2
+          _exe="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+          if [[ -x "$_exe" ]]; then
+            _profile="$(mktemp -d "${TMPDIR:-/tmp}/grok-oauth-chrome.XXXXXX")"
+            ("$_exe" --user-data-dir="$_profile" --no-first-run --no-default-browser-check \
+              --disable-sync --incognito --new-window "$URL" >/dev/null 2>&1 &)
+            exit 0
+          fi
+        fi
+
+        if [[ ! -d "/Applications/Google Chrome.app" ]]; then
+          open "$URL"; exit 0
+        fi
+
+        real_pids="$(real_chrome_main_pids)"
+        if [[ -n "$real_pids" ]]; then
+          if osascript -e "tell application \"Google Chrome\" to open location \"${URL//\"/\\\"}\"" >/dev/null 2>&1; then
+            exit 0
+          fi
+          open -a "Google Chrome" "$URL"
+          exit 0
+        fi
+        echo "→ Cold-start Chrome --profile-directory=$CHROME_PROFILE" >&2
+        open -na "Google Chrome" --args --profile-directory="$CHROME_PROFILE" "$URL"
+        exit 0
+        """#
+
+        // Device-code CLI + normal Chrome.
+        // No local auth.json → first login, open device URL only (no logout).
+        // Has auth.json → optional soft sign-out, then device URL.
+        // Step 2 (CLI) skips sign-out entirely.
+        let deviceLoginPy = #"""
+        #!/usr/bin/env python3
+        """Device-code OAuth in normal Chrome; skip logout when no local auth."""
+        import os
+        import re
+        import subprocess
+        import sys
+
+        if len(sys.argv) < 3:
+            print(
+                "usage: run-device-login-incognito.py <browser-helper> <cmd> [args...]",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
+        helper = sys.argv[1]
+        cmd = sys.argv[2:]
+        url_re = re.compile(r"https://[^\s\)\]\"']+")
+        expect = (os.environ.get("GROK_EXPECT_EMAIL") or "").strip().lower()
+        # Default: normal Chrome. Opt in to empty profile only with GROK_OAUTH_CLEAN=1.
+        use_clean = os.environ.get("GROK_OAUTH_CLEAN", "0") == "1"
+        # Second step (CLI login) skips xAI logout — already done in step 1 (proxy).
+        skip_signout = os.environ.get("GROK_SKIP_XAI_SIGNOUT", "0") == "1"
+        # Fresh machine / wiped auth: no local session to leave — do not force logout.
+        from pathlib import Path as _Path
+        has_local_auth = (_Path.home() / ".grok" / "auth.json").is_file()
+
+        def open_url(url: str, *, clean: bool = False) -> None:
+            env = os.environ.copy()
+            if clean:
+                env["GROK_OAUTH_CLEAN"] = "1"
+            else:
+                env.pop("GROK_OAUTH_CLEAN", None)
+            subprocess.run([helper, url], check=False, env=env)
+
+        def pause(msg: str) -> None:
+            print(msg, flush=True)
+            try:
+                with open("/dev/tty", "r") as tty:
+                    tty.readline()
+            except Exception:
+                try:
+                    input()
+                except EOFError:
+                    pass
+
+        def active_email() -> str:
+            import json
+            from pathlib import Path
+
+            p = Path.home() / ".grok" / "auth.json"
+            if not p.is_file():
+                return ""
+            try:
+                raw = json.loads(p.read_text())
+            except Exception:
+                return ""
+            for v in raw.values():
+                if isinstance(v, dict) and v.get("email"):
+                    return str(v["email"]).strip().lower()
+            return str(raw.get("email") or "").strip().lower()
+
+        # Do not let the CLI open the default browser (we drive Chrome ourselves).
+        env = os.environ.copy()
+        env["BROWSER"] = "true"
+        env["BROWSER_PATH"] = "true"
+
+        print(f"$ {' '.join(cmd)}", flush=True)
+        if expect:
+            print(f"Expected SuperGrok account: {expect}", flush=True)
+        if use_clean:
+            print("GROK_OAUTH_CLEAN=1 → temporary empty Chrome profile\n", flush=True)
+        else:
+            print("Normal Chrome profile (saved Google accounts stay).\n", flush=True)
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+        assert proc.stdout is not None
+        opened = False
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            if opened:
+                continue
+            m = url_re.search(line)
+            if not m:
+                continue
+            url = m.group(0).rstrip(".,);")
+
+            print("\n========== accounts.x.ai SESSION ==========", flush=True)
+            print(
+                "Device auth uses the SuperGrok account already signed into accounts.x.ai,",
+                flush=True,
+            )
+            print(
+                "not whichever Google account is selected on myaccount.google.com.",
+                flush=True,
+            )
+            print("", flush=True)
+
+            target_hint = expect or "the SuperGrok Google account you want"
+
+            if use_clean:
+                print(f"Opening device URL in clean Chrome:\n  {url}\n", flush=True)
+                print(
+                    f"Sign in with Google as {expect or 'the account you want'}, then Approve.",
+                    flush=True,
+                )
+                open_url(url, clean=True)
+            elif skip_signout:
+                print(f"[step 2] Device URL (Approve in Chrome):\n  {url}\n", flush=True)
+                open_url(url, clean=False)
+            elif not has_local_auth:
+                # First login after wipe / no account — do not force logout.
+                print(
+                    "[first login] No ~/.grok/auth.json — skipping accounts.x.ai logout.",
+                    flush=True,
+                )
+                print(f"Opening device URL:\n  {url}\n", flush=True)
+                print(
+                    f"Sign in / Approve as {target_hint}. Waiting for CLI…\n",
+                    flush=True,
+                )
+                open_url(url, clean=False)
+            else:
+                # Have local auth: soft optional sign-out only (not a hard requirement).
+                print(
+                    "[switch] Local auth exists. Opening logout pages only if you need to leave",
+                    flush=True,
+                )
+                print(
+                    "another SuperGrok session — not required if already signed out.",
+                    flush=True,
+                )
+                open_url("https://accounts.x.ai/logout", clean=False)
+                open_url("https://accounts.x.ai/", clean=False)
+                pause(
+                    f"\n>>> Target: {target_hint}"
+                    "\n>>> If Chrome shows the wrong SuperGrok user, sign out there."
+                    "\n>>> If you are already signed out / first time in this browser, ignore logout."
+                    "\n>>> Press Return to open the device login page…\n"
+                )
+                print(f"Opening xAI device URL:\n  {url}\n", flush=True)
+                open_url(url, clean=False)
+                print(
+                    f"Approve as {target_hint}. Waiting for CLI…\n",
+                    flush=True,
+                )
+
+            opened = True
+
+        code = proc.wait()
+        if not opened:
+            print("\nNo authorization URL was printed.", flush=True)
+            raise SystemExit(code if code is not None else 1)
+
+        if code != 0:
+            raise SystemExit(code)
+
+        # Only `grok login` writes ~/.grok/auth.json.
+        is_cli_login = "login" in cmd
+        if is_cli_login:
+            got = active_email()
+            if expect and got and got != expect:
+                print("", flush=True)
+                print("!!!!!!!!!! WRONG ACCOUNT !!!!!!!!!!", flush=True)
+                print(f"  expected: {expect}", flush=True)
+                print(f"  got:      {got}", flush=True)
+                print("", flush=True)
+                print(
+                    "accounts.x.ai was almost certainly still signed in as the wrong user",
+                    flush=True,
+                )
+                print(
+                    "when you Approved. Retry: Activate target → Grok login →",
+                    flush=True,
+                )
+                print(
+                    "fully sign out of accounts.x.ai → Login with Google as the target",
+                    flush=True,
+                )
+                print(
+                    "→ confirm email on the device page → Approve.",
+                    flush=True,
+                )
+                print(
+                    "(Optional: GROK_OAUTH_CLEAN=1 for an empty Chrome window.)",
+                    flush=True,
+                )
+                raise SystemExit(42)
+            if got:
+                print(f"\n✓ Active CLI login: {got}", flush=True)
+        raise SystemExit(0)
+        """#
+
+        let saveProfilePy = #"""
+        #!/usr/bin/env python3
+        # After grok login: copy auth.json → profiles/<email>.json and sync proxy auth.
+        import json
+        import os
+        import shutil
+        import time
+        from datetime import datetime
+        from pathlib import Path
+
+        home = Path.home()
+        auth_path = home / ".grok" / "auth.json"
+        profiles = home / ".grok" / "profiles"
+        proxy_auth = home / ".config" / "claude-code-proxy" / "grok" / "auth.json"
+
+        if not auth_path.is_file():
+            print("  skip: no ~/.grok/auth.json")
+            raise SystemExit(0)
+
+        try:
+            raw = json.loads(auth_path.read_text())
+        except Exception as e:
+            print(f"  skip profile save: cannot read auth.json ({e})")
+            raise SystemExit(0)
+
+        email = None
+        entry = None
+        for _, v in raw.items():
+            if isinstance(v, dict) and v.get("email"):
+                email = v["email"]
+                entry = v
+                break
+        if not email:
+            email = raw.get("email")
+            entry = raw if email else None
+        if not email or not isinstance(entry, dict):
+            print("  skip profile save: no email in auth.json")
+            raise SystemExit(0)
+
+        profiles.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if c.isalnum() or c in "._@+-" else "_" for c in email)
+        dest = profiles / f"{safe}.json"
+        shutil.copy2(auth_path, dest)
+        os.chmod(dest, 0o600)
+        print(f"  saved profile: {dest}")
+
+        access = entry.get("key") or entry.get("access_token") or entry.get("access") or ""
+        refresh = entry.get("refresh_token") or entry.get("refresh") or ""
+        issuer = entry.get("oidc_issuer") or "https://auth.x.ai"
+        client_id = entry.get("oidc_client_id") or entry.get("client_id") or ""
+        expires_ms = None
+        exp = entry.get("expires_at")
+        if exp:
+            try:
+                s = str(exp).replace("Z", "+00:00")
+                expires_ms = int(datetime.fromisoformat(s).timestamp() * 1000)
+            except Exception:
+                expires_ms = None
+        if expires_ms is None:
+            expires_ms = int((time.time() + 6 * 3600) * 1000)
+
+        if access:
+            proxy_auth.parent.mkdir(parents=True, exist_ok=True)
+            out = {
+                "access": access,
+                "refresh": refresh,
+                "expires_at_ms": expires_ms,
+                "issuer": issuer,
+                "client_id": client_id,
+            }
+            tmp = proxy_auth.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+            tmp.replace(proxy_auth)
+            os.chmod(proxy_auth, 0o600)
+            print(f"  synced proxy auth for {email}")
+        print(f"  active login: {email}")
+        """#
+
+        // GROK_EXPECT_EMAIL is chosen interactively in Terminal (not from active auth.json).
+        let shellBody = #"""
         #!/bin/zsh
         set +e
         export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.grok/bin:$PATH"
+        LOG_DIR="$HOME/Library/Logs/ClaudeCodeProxyTokenMonitorTray"
+        BROWSER_HELPER="$LOG_DIR/open-incognito-browser.sh"
+        DEVICE_LOGIN="$LOG_DIR/run-device-login-incognito.py"
+        SAVE_PROFILE="$LOG_DIR/save-grok-profile-after-login.py"
         clear
-        echo "=== Grok login (browser) — Claude-Code-Proxy Token Monitor Tray ==="
+        echo "=== Grok login (normal Chrome) ==="
         echo ""
-        echo "This window will open a browser for SuperGrok OAuth."
-        echo "Proxy auth file: ~/.config/claude-code-proxy/grok/auth.json"
-        echo "CLI auth file:   ~/.grok/auth.json"
+        echo "Uses your normal Chrome. Approve as the SuperGrok Google account you want."
+        echo "Target is NOT taken from old active auth.json (that caused padgnoehc confusion)."
         echo ""
-        echo "Step 1/2: claude-code-proxy grok auth login"
-        echo "Binary: \(bin)"
-        echo ""
-        "\(bin)" grok auth login
-        code=$?
-        echo ""
-        if [ "$code" -ne 0 ]; then
-          echo "Proxy Grok login failed (exit $code)."
-          echo "You can retry:  \(bin) grok auth login"
-        else
-          echo "Step 1 OK."
-          echo ""
-          echo "Step 2/2: grok login (so tray usage matches the same account)"
-          if command -v grok >/dev/null 2>&1; then
-            grok login
-            echo "Step 2 finished (exit $?)."
+
+        # Optional target: only if you type one. Empty = accept whatever Chrome Approves.
+        export GROK_EXPECT_EMAIL=""
+        PROFILES_DIR="$HOME/.grok/profiles"
+        typeset -a PROFILE_EMAILS
+        PROFILE_EMAILS=()
+        if [[ -d "$PROFILES_DIR" ]]; then
+          for f in "$PROFILES_DIR"/*.json(N); do
+            base="$(basename "$f" .json)"
+            [[ "$base" == _backup* ]] && continue
+            PROFILE_EMAILS+=("$base")
+          done
+        fi
+        if (( ${#PROFILE_EMAILS[@]} > 0 )); then
+          echo "Saved profiles (optional check after login):"
+          i=1
+          for e in "${PROFILE_EMAILS[@]}"; do
+            echo "  $i) $e"
+            (( i++ ))
+          done
+          echo "  (or type a full email)"
+        fi
+        echo -n "Login as which account? [Enter = any / no check]: "
+        read -r TARGET_RAW
+        TARGET_RAW="${TARGET_RAW// /}"
+        if [[ -n "$TARGET_RAW" ]]; then
+          if [[ "$TARGET_RAW" == <-> ]] && (( TARGET_RAW >= 1 && TARGET_RAW <= ${#PROFILE_EMAILS[@]} )); then
+            export GROK_EXPECT_EMAIL="${PROFILE_EMAILS[$TARGET_RAW]}"
           else
-            echo "grok CLI not on PATH — skipped. Tray can still use proxy auth after Activate sync."
+            export GROK_EXPECT_EMAIL="$TARGET_RAW"
+          fi
+          echo "Will verify after CLI login: $GROK_EXPECT_EMAIL"
+        else
+          echo "No target check — will save whatever account OAuth returns."
+        fi
+        echo ""
+
+        if ! command -v grok >/dev/null 2>&1; then
+          echo "ERROR: grok CLI not on PATH. Expected: $HOME/.grok/bin/grok"
+          echo "Press Return to close…"
+          read -r _
+          exit 1
+        fi
+
+        HAS_PROXY=0
+        if command -v claude-code-proxy >/dev/null 2>&1; then HAS_PROXY=1; fi
+        for p in /opt/homebrew/bin/claude-code-proxy /usr/local/bin/claude-code-proxy \
+                 "$HOME/.local/bin/claude-code-proxy"; do
+          [[ -x "$p" ]] && HAS_PROXY=1
+        done
+
+        USE_DEVICE_HELPER=0
+        if [[ -x "$BROWSER_HELPER" && -f "$DEVICE_LOGIN" ]] && command -v python3 >/dev/null 2>&1; then
+          USE_DEVICE_HELPER=1
+        fi
+
+        echo "======== Grok login (standard CLI) ========"
+        if (( HAS_PROXY )); then
+          echo "claude-code-proxy: found (will sync auth after login)"
+        else
+          echo "claude-code-proxy: not installed — CLI-only (no Launch button in tray)"
+        fi
+        echo ""
+
+        if (( USE_DEVICE_HELPER )); then
+          python3 "$DEVICE_LOGIN" "$BROWSER_HELPER" grok login --device-auth
+          code=$?
+        else
+          echo "Device helper unavailable — running standard: grok login"
+          grok login
+          code=$?
+        fi
+        echo ""
+        if [ "$code" -eq 42 ]; then
+          echo "Stopped: wrong account vs your chosen target. Not saving."
+        elif [ "$code" -ne 0 ]; then
+          echo "Grok login failed (exit $code)."
+        else
+          if [[ -f "$SAVE_PROFILE" ]]; then
+            if (( HAS_PROXY )); then
+              echo "Saving profile + syncing proxy auth…"
+              python3 "$SAVE_PROFILE" || true
+            else
+              echo "Saving profile only (no claude-code-proxy)…"
+              python3 - <<'PY'
+        import json, os, shutil
+        from pathlib import Path
+        home = Path.home()
+        auth = home / ".grok" / "auth.json"
+        profiles = home / ".grok" / "profiles"
+        if not auth.is_file():
+            raise SystemExit(0)
+        raw = json.loads(auth.read_text())
+        email = None
+        for v in raw.values():
+            if isinstance(v, dict) and v.get("email"):
+                email = v["email"]
+                break
+        if not email:
+            raise SystemExit(0)
+        profiles.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if c.isalnum() or c in "._@+-" else "_" for c in email)
+        dest = profiles / f"{safe}.json"
+        shutil.copy2(auth, dest)
+        os.chmod(dest, 0o600)
+        print(f"  saved profile: {dest}")
+        print(f"  active login: {email}")
+        PY
+            fi
           fi
           echo ""
-          echo "Done. Back in the tray:"
-          echo "  1) Activate the Grok account you just used"
-          echo "  2) Launch claude-code-proxy"
-          echo "  3) Restart Claude Code"
+          echo "Done."
+          echo "  1) Activate the account in the tray if needed"
+          if (( HAS_PROXY )); then
+            echo "  2) Launch claude-code-proxy if you use Claude Code via proxy"
+            echo "  3) Restart Claude Code if needed"
+          else
+            echo "  2) Use Grok CLI / tray usage (no proxy)"
+          fi
         fi
         echo ""
         echo "Press Return to close this window…"
         read -r _
-        """
+        """#
 
         do {
             try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            try browserHelper.write(to: browserHelperURL, atomically: true, encoding: .utf8)
+            try deviceLoginPy.write(to: deviceLoginURL, atomically: true, encoding: .utf8)
+            try saveProfilePy.write(to: saveProfileURL, atomically: true, encoding: .utf8)
             try shellBody.write(to: scriptURL, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755],
-                ofItemAtPath: scriptURL.path
-            )
+            for url in [browserHelperURL, deviceLoginURL, saveProfileURL, scriptURL] {
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o755],
+                    ofItemAtPath: url.path
+                )
+            }
             // Clear quarantine so double-open isn't blocked.
             let xattr = Process()
             xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
-            xattr.arguments = ["-cr", scriptURL.path]
+            xattr.arguments = ["-cr", logDir.path]
             xattr.standardOutput = Pipe()
             xattr.standardError = Pipe()
             try? xattr.run()
@@ -664,11 +1445,11 @@ final class UsageViewModel: ObservableObject {
                         if let error {
                             self.setSwitchMessage(
                                 "Terminal open failed: \(error.localizedDescription)\n"
-                                    + "Run: \(bin) grok auth login"
+                                    + "Run: grok login"
                             )
                         } else {
                             self.setSwitchMessage(
-                                "Terminal opened for Grok browser login. Finish in that window."
+                                "Terminal opened for Grok login. Optional target email, then Approve in Chrome."
                             )
                         }
                     }
@@ -680,11 +1461,11 @@ final class UsageViewModel: ObservableObject {
                         if let error {
                             self.setSwitchMessage(
                                 "Could not open login script: \(error.localizedDescription)\n"
-                                    + "Run in Terminal:\n  \(bin) grok auth login"
+                                    + "Run in Terminal:\n  grok login"
                             )
                         } else {
                             self.setSwitchMessage(
-                                "Opened grok-login.command. Finish login in the Terminal window."
+                                "Opened grok-login.command. Finish login in Terminal / Chrome."
                             )
                         }
                     }
@@ -693,9 +1474,7 @@ final class UsageViewModel: ObservableObject {
         } catch {
             setSwitchMessage(
                 "Could not write login script: \(error.localizedDescription)\n"
-                    + "Run manually in Terminal:\n"
-                    + "  \(bin) grok auth login\n"
-                    + "  grok login"
+                    + "Run manually in Terminal:\n  grok login"
             )
         }
     }
@@ -809,10 +1588,13 @@ final class UsageViewModel: ObservableObject {
         return Array(Set(pids)).sorted()
     }
 
-    func refresh() async {
+    /// Refresh usage. `force: true` always starts a new fetch after any in-flight one
+    /// finishes — needed after Activate/switch so we do not keep the previous account’s numbers.
+    func refresh(force: Bool = false) async {
         if let existing = fetchTask {
             await existing.value
-            return
+            fetchTask = nil
+            if !force { return }
         }
         let task = Task { await performRefresh() }
         fetchTask = task
@@ -825,6 +1607,8 @@ final class UsageViewModel: ObservableObject {
         defer { isLoading = false }
         reloadProviders()
         refreshProxyStatus()
+        // Re-read active email so UI/subscription renew match the switched account.
+        reloadGrokProfiles()
 
         async let grokResult = fetchGrok()
         async let dsResult = fetchDeepSeek()
@@ -835,6 +1619,10 @@ final class UsageViewModel: ObservableObject {
             grok = snap
             grokError = nil
         case .failure(let err):
+            // Clear stale limits from the previous account on hard auth failure.
+            if let ue = err as? UsageService.UsageError, case .http(let code, _) = ue, code == 401 || code == 403 {
+                grok = nil
+            }
             grokError = err.localizedDescription
         }
 
