@@ -333,9 +333,11 @@ struct ContentView: View {
             } else {
                 ForEach(model.grokProfiles) { p in
                     HStack(spacing: 6) {
-                        Text(p.email)
-                            .font(.body)
+                        // e.g. "machingclee / 2.33d" — days from cached weekly_end, live if active.
+                        Text(model.grokAccountRowLabel(p.email))
+                            .font(.body.monospacedDigit())
                             .lineLimit(1)
+                            .help(p.email)
                         if model.isGrokAccountFullyActive(p) {
                             Text("active")
                                 .font(.body)

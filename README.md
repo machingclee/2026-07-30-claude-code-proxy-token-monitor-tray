@@ -363,6 +363,7 @@ DeepSeek “active” = that variant is selected **and** Claude settings look li
 | `~/.grok/profiles/*.json` | Saved Grok logins for multi-account Activate |
 | `~/.config/claude-code-proxy/grok/auth.json` | Proxy upstream Grok tokens (synced from CLI auth when proxy is used) |
 | `~/Library/Application Support/Claude-Code-Proxy Token Monitor Tray/deepseek.json` | DeepSeek API key + models + active variant |
+| `~/Library/Application Support/Claude-Code-Proxy Token Monitor Tray/grok-weekly-resets.json` | Per-email SuperGrok weekly reset (`weekly_end` ISO-8601) + last % for offline `machingclee / 2.33d` |
 | `~/.claude/settings.json` | Live Claude Code env (**written** on Grok/DeepSeek Activate) |
 | `~/.cc-switch/*` | Optional legacy read/write for some Grok CC Switch provider merges |
 | UserDefaults | Per-email SuperGrok renew anchors, launch-at-login |

@@ -663,11 +663,31 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// SuperGrok weekly usage % (the only rate-limit that matters day to day).
+    /// SuperGrok weekly usage for menu bar: live `65% / 5.33d`, or cached days if offline.
     var grokWeeklyLabel: String {
         if let grok { return grok.menuBarTitle }
+        // No live snapshot: still show cached reset countdown for active email if we have it.
+        if let email = activeGrokEmail ?? GrokAccountStore.activeEmail(),
+           let days = GrokWeeklyResetStore.remainingDaysCompact(for: email) {
+            if let pct = GrokWeeklyResetStore.record(for: email)?.weeklyPercent {
+                return String(format: "%.0f%% / %@", pct, days)
+            }
+            return "— / \(days)"
+        }
         if grokError != nil { return "!" }
         return isLoading ? "…" : "—"
+    }
+
+    /// Account row label: `machingclee / 2.33d` from cache (or live if this is the active fetch).
+    func grokAccountRowLabel(_ email: String) -> String {
+        // Prefer live weekly end when this email is active and we just fetched.
+        if let active = activeGrokEmail ?? GrokAccountStore.activeEmail(),
+           active.caseInsensitiveCompare(email) == .orderedSame,
+           let grok, let end = grok.weeklyEnd {
+            let days = UsageService.remainingDaysCompact(until: end)
+            return "\(GrokWeeklyResetStore.shortName(email)) / \(days)"
+        }
+        return GrokWeeklyResetStore.accountLabel(email: email)
     }
 
     var grokMenuLabel: String {
@@ -1614,6 +1634,12 @@ final class UsageViewModel: ObservableObject {
         case .success(let snap):
             grok = snap
             grokError = nil
+            // Persist weekly reset so other accounts can show `machingclee / 2.33d` offline.
+            GrokWeeklyResetStore.update(
+                email: GrokAccountStore.activeEmail(),
+                weeklyEnd: snap.weeklyEnd,
+                weeklyPercent: snap.weeklyPercent
+            )
         case .failure(let err):
             // Clear stale limits from the previous account on hard auth failure.
             if let ue = err as? UsageService.UsageError, case .http(let code, _) = ue, code == 401 || code == 403 {
