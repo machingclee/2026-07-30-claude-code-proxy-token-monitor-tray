@@ -218,6 +218,9 @@ struct ContentView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         let expanded = expandedIds.contains(id)
+        // Use Claude settings / tray activeKind — not CC Switch isCurrent
+        // (Grok can remain "current" in CC Switch after DeepSeek Activate).
+        let isActive = model.activeKind == icon
 
         return VStack(alignment: .leading, spacing: 6) {
             Button {
@@ -239,7 +242,7 @@ struct ContentView: View {
                         .fontWeight(.regular)
                         .foregroundStyle(.primary)
 
-                    if provider?.isCurrent == true {
+                    if isActive {
                         Text("active")
                             .font(.body)
                             .padding(.horizontal, 5)
@@ -263,7 +266,7 @@ struct ContentView: View {
                 .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(
-                            provider?.isCurrent == true
+                            isActive
                                 ? Color.accentColor.opacity(0.06)
                                 : Color.primary.opacity(0.03)
                         )
