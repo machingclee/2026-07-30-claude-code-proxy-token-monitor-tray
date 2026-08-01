@@ -27,11 +27,6 @@ final class UsageViewModel: ObservableObject {
     @Published var launchAtLogin = false
     @Published var loginItemMessage: String?
 
-    /// Manual SuperGrok renew (from grok.com Billing / rest/subscriptions).
-    @Published private(set) var subscriptionNextRenew: Date?
-    @Published var subscriptionRenewDraft = ""
-    @Published var subscriptionRenewMessage: String?
-
     /// Saved Grok CLI logins under ~/.grok/profiles/
     @Published private(set) var grokProfiles: [GrokAccountStore.Profile] = []
     @Published private(set) var activeGrokEmail: String?
@@ -82,7 +77,6 @@ final class UsageViewModel: ObservableObject {
         reloadProviders()
         refreshClaudeCodeProxyAvailability()
         refreshProxyStatus()
-        reloadSubscriptionRenew()
         reloadGrokProfiles()
         reloadDeepSeekConfig()
         Task { await refresh() }
@@ -272,8 +266,6 @@ final class UsageViewModel: ObservableObject {
     func reloadGrokProfiles() {
         grokProfiles = GrokAccountStore.listProfiles()
         activeGrokEmail = GrokAccountStore.activeEmail()
-        // Renew date is per-account — refresh when profiles / active login change.
-        reloadSubscriptionRenew()
     }
 
     /// True when the active CLI login is not yet stored under `~/.grok/profiles/`
@@ -466,65 +458,6 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    func reloadSubscriptionRenew() {
-        let email = activeGrokEmail ?? GrokAccountStore.activeEmail()
-        subscriptionNextRenew = SubscriptionRenewStore.nextRenewal(for: email)
-        if let s = SubscriptionRenewStore.anchorDayString(for: email) {
-            subscriptionRenewDraft = s
-        } else {
-            subscriptionRenewDraft = ""
-        }
-    }
-
-    /// Save anchor day for the **active** Grok account (`yyyy-MM-dd` from grok.com 續訂).
-    /// Next renew is that day if still upcoming, otherwise +1 month repeatedly.
-    func saveSubscriptionRenewDate() {
-        let email = activeGrokEmail ?? GrokAccountStore.activeEmail()
-        guard let email, !email.isEmpty else {
-            subscriptionRenewMessage = "No active Grok login. Run grok login first."
-            return
-        }
-        let raw = subscriptionRenewDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let day = SubscriptionRenewStore.parseDay(raw) else {
-            subscriptionRenewMessage = "Use date format yyyy-MM-dd (e.g. 2026-08-19)"
-            return
-        }
-        SubscriptionRenewStore.setAnchorDate(day, for: email)
-        subscriptionNextRenew = SubscriptionRenewStore.nextRenewal(for: email)
-        subscriptionRenewDraft = SubscriptionRenewStore.anchorDayString(for: email) ?? raw
-        if let next = subscriptionNextRenew {
-            subscriptionRenewMessage =
-                "Saved for \(email). Next renew: \(SubscriptionRenewStore.formatDay(next))"
-        } else {
-            subscriptionRenewMessage = "Saved for \(email)."
-        }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            if subscriptionRenewMessage?.hasPrefix("Saved") == true {
-                subscriptionRenewMessage = nil
-            }
-        }
-    }
-
-    func clearSubscriptionRenewDate() {
-        let email = activeGrokEmail ?? GrokAccountStore.activeEmail()
-        SubscriptionRenewStore.setAnchorDate(nil, for: email)
-        subscriptionNextRenew = nil
-        subscriptionRenewDraft = ""
-        subscriptionRenewMessage = email.map { "Cleared renew date for \($0)." }
-            ?? "Cleared subscription renew date."
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            if subscriptionRenewMessage?.hasPrefix("Cleared") == true {
-                subscriptionRenewMessage = nil
-            }
-        }
-    }
-
-    var subscriptionRenewRemainingLabel: String {
-        SubscriptionRenewStore.remainingLabel(until: subscriptionNextRenew)
-    }
-
     func refreshProxyStatus() {
         refreshClaudeCodeProxyAvailability()
         isProxyRunning = Self.isListening(port: Self.proxyPort)
@@ -678,14 +611,14 @@ final class UsageViewModel: ObservableObject {
         return isLoading ? "…" : "—"
     }
 
-    /// Account row label: `machingclee / 2.33d` from cache (or live if this is the active fetch).
+    /// Account row label: `padgnoehc / 4d 23h 54m` from cache (or live if active).
     func grokAccountRowLabel(_ email: String) -> String {
         // Prefer live weekly end when this email is active and we just fetched.
         if let active = activeGrokEmail ?? GrokAccountStore.activeEmail(),
            active.caseInsensitiveCompare(email) == .orderedSame,
            let grok, let end = grok.weeklyEnd {
-            let days = UsageService.remainingDaysCompact(until: end)
-            return "\(GrokWeeklyResetStore.shortName(email)) / \(days)"
+            let rem = UsageService.remainingLabel(until: end)
+            return "\(GrokWeeklyResetStore.shortName(email)) / \(rem)"
         }
         return GrokWeeklyResetStore.accountLabel(email: email)
     }
@@ -769,7 +702,6 @@ final class UsageViewModel: ObservableObject {
             reloadProviders()
             refreshClaudeCodeProxyAvailability()
             refreshProxyStatus()
-            reloadSubscriptionRenew()
             reloadGrokProfiles()
             reloadDeepSeekConfig()
             // Force re-read auth after possible external login/switch.
@@ -1623,7 +1555,7 @@ final class UsageViewModel: ObservableObject {
         defer { isLoading = false }
         reloadProviders()
         refreshProxyStatus()
-        // Re-read active email so UI/subscription renew match the switched account.
+        // Re-read active email so account rows match the switched login.
         reloadGrokProfiles()
 
         async let grokResult = fetchGrok()

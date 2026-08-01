@@ -107,17 +107,23 @@ enum GrokWeeklyResetStore {
         saveAll(all)
     }
 
-    /// `1.23d` from a stored or live weeklyEnd.
+    /// Compact fractional days (`1.23d`) from a stored weeklyEnd — for menu bar.
     static func remainingDaysCompact(for email: String?) -> String? {
         guard let rec = record(for: email) else { return nil }
         return UsageService.remainingDaysCompact(until: rec.weeklyEnd)
     }
 
-    /// Panel / list label: `machingclee / 2.33d`
+    /// Human remaining (`4d 23h 54m`) from a stored weeklyEnd — for account list.
+    static func remainingLabel(for email: String?) -> String? {
+        guard let rec = record(for: email) else { return nil }
+        return UsageService.remainingLabel(until: rec.weeklyEnd)
+    }
+
+    /// Panel account list: `padgnoehc / 4d 23h 54m`
     static func accountLabel(email: String) -> String {
         let name = shortName(email)
-        if let days = remainingDaysCompact(for: email) {
-            return "\(name) / \(days)"
+        if let rem = remainingLabel(for: email) {
+            return "\(name) / \(rem)"
         }
         return name
     }

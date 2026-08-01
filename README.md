@@ -161,7 +161,6 @@ Recipient: unzip → move to Applications → open (if blocked: right-click Open
 - **Grok login** in Terminal (standard CLI; one browser Approve)
 - **Activate** runs a **live billing API** check — re-login only on 401/403
 - After a successful Activate, **weekly** usage is **force-refreshed**
-- Optional SuperGrok **subscription renew** date (manual, per email)
 - **Launch / Stop claude-code-proxy** only if the binary is installed (or port 18765 is already in use)
 
 ### DeepSeek
@@ -226,7 +225,7 @@ Typical order in the panel:
 2. **Save current login as profile** (if the active login is not saved yet)
 3. **Grok login**
 4. **Launch / Stop claude-code-proxy** (only if installed / running)
-5. **Weekly** / **Monthly** usage + subscription renew
+5. **SuperGrok weekly limit** (used % + time until weekly reset)
 
 ### Multiple SuperGrok accounts
 
@@ -296,21 +295,10 @@ SuperGrok’s rate limit is a **shared weekly pool**. The tray monitors that onl
 
 | UI | Meaning |
 | --- | --- |
-| Menu bar `65% / 5.33d` | Weekly pool used · fractional days until reset |
-| **SuperGrok weekly limit** | Bar + % used/left + `1.23d` + wall-clock reset |
-| **Subscription renew** (optional) | Card/billing day on grok.com — **not** a monthly usage quota |
+| Menu bar `65% / 5.33d` | Weekly pool used · fractional days until **weekly** reset |
+| **SuperGrok weekly limit** | Bar + % used/left + `1.23d` + wall-clock weekly reset |
 
-There is **no** separate SuperGrok “monthly usage monitor” in the tray (the old CLI billing-period bar was removed as misleading).
-
-### SuperGrok subscription renew (manual, optional)
-
-Real renew day is on **grok.com → Billing**, not a usage limit.
-
-1. Expand Grok → **Subscription renew**  
-2. **Update** → `yyyy-MM-dd` → **Save**  
-3. **Clear** removes the date for the **current** email only  
-
-Stored **per Grok email**. After the day passes, next renew is advanced by one month at a time.
+There is **no** subscription/card “renew date” editor in the tray, and **no** monthly usage quota — only the weekly pool.
 
 ---
 
@@ -366,7 +354,7 @@ DeepSeek “active” = that variant is selected **and** Claude settings look li
 | `~/Library/Application Support/Claude-Code-Proxy Token Monitor Tray/grok-weekly-resets.json` | Per-email SuperGrok weekly reset (`weekly_end` ISO-8601) + last % for offline `machingclee / 2.33d` |
 | `~/.claude/settings.json` | Live Claude Code env (**written** on Grok/DeepSeek Activate) |
 | `~/.cc-switch/*` | Optional legacy read/write for some Grok CC Switch provider merges |
-| UserDefaults | Per-email SuperGrok renew anchors, launch-at-login |
+| UserDefaults | Launch-at-login (and other small prefs) |
 | `~/Library/Logs/ClaudeCodeProxyTokenMonitorTray/` | Login helpers, proxy log |
 
 Clearing Grok auth for a full retry (example):
@@ -423,7 +411,7 @@ Sources/TokenMonitorTray/
   DeepSeekConfigStore.swift       Local DeepSeek config + Activate (Application Support)
   GrokAccountStore.swift          ~/.grok/auth.json + profiles + proxy auth sync
   CCSwitchService.swift           Optional CC Switch read/write (legacy / Grok provider)
-  SubscriptionRenewStore.swift    Per-email manual renew dates
+  GrokWeeklyResetStore.swift      Per-email weekly reset cache (ISO-8601)
   LoginItemService.swift          Launch at login
   PanelWindowFade.swift           Panel fade in/out
   GrokIcon / DeepSeekIcon / MenuBarLabelImage

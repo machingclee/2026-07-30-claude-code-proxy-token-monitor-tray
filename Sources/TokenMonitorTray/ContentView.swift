@@ -5,8 +5,6 @@ struct ContentView: View {
     @ObservedObject var model: UsageViewModel
     /// Sections start collapsed; expand is exclusive (Grok ↔ DeepSeek accordion).
     @State private var expandedIds: Set<String> = []
-    /// Subscription renew editor shown only after Update.
-    @State private var editingSubscriptionRenew = false
 
     /// Fixed panel size so expand/collapse does not resize the MenuBarExtra window
     /// (height changes otherwise re-anchor the panel and it jumps up/across the screen).
@@ -42,7 +40,6 @@ struct ContentView: View {
                         grokAccountsSection
                         if let snap = model.grok {
                             weeklySection(snap)
-                            subscriptionRenewSection
                         } else if model.grokError == nil {
                             Text("Loading…").font(.body).foregroundStyle(.secondary)
                         }
@@ -333,7 +330,7 @@ struct ContentView: View {
             } else {
                 ForEach(model.grokProfiles) { p in
                     HStack(spacing: 6) {
-                        // e.g. "machingclee / 2.33d" — days from cached weekly_end, live if active.
+                        // e.g. "padgnoehc / 4d 23h 54m" — from cached weekly_end, live if active.
                         Text(model.grokAccountRowLabel(p.email))
                             .font(.body.monospacedDigit())
                             .lineLimit(1)
@@ -479,7 +476,7 @@ struct ContentView: View {
             usageBar(percent: snap.weeklyPercent)
             row("Used", String(format: "%.1f%%", snap.weeklyPercent))
             row("Left", String(format: "~%.1f%%", snap.weeklyLeft))
-            row("Resets in", snap.weeklyRemainingDaysCompact)
+            // Days until reset already shown in menu bar (`65% / 5.33d`) and account rows.
             row("Resets at", "\(UsageService.formatDate(snap.weeklyEnd))  (\(snap.weeklyRemainingLabel))")
             if !snap.productLines.isEmpty {
                 ForEach(Array(snap.productLines.enumerated()), id: \.offset) { _, p in
@@ -490,74 +487,6 @@ struct ContentView: View {
                 .font(.body)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-        }
-    }
-
-    /// Optional card renew day only (not a SuperGrok usage quota).
-    private var subscriptionRenewSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Subscription renew (optional)")
-                .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.top, 6)
-            Text("Billing/card renew day from grok.com — not a monthly usage limit.")
-                .font(.body)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(alignment: .center, spacing: 8) {
-                Text("Next renew")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 110, alignment: .leading)
-                if let next = model.subscriptionNextRenew {
-                    Text("\(SubscriptionRenewStore.formatDay(next))  (in \(model.subscriptionRenewRemainingLabel))")
-                        .font(.body.monospacedDigit())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                } else {
-                    Text("Not set")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Button("Update") {
-                    model.reloadSubscriptionRenew()
-                    editingSubscriptionRenew = true
-                }
-                .controlSize(.regular)
-            }
-
-            if editingSubscriptionRenew {
-                HStack(spacing: 6) {
-                    TextField("yyyy-MM-dd", text: $model.subscriptionRenewDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(maxWidth: 140)
-                        .onSubmit {
-                            model.saveSubscriptionRenewDate()
-                            editingSubscriptionRenew = false
-                        }
-                    Button("Save") {
-                        model.saveSubscriptionRenewDate()
-                        editingSubscriptionRenew = false
-                    }
-                    .controlSize(.regular)
-                    Button("Clear") {
-                        model.clearSubscriptionRenewDate()
-                        editingSubscriptionRenew = false
-                    }
-                    .controlSize(.regular)
-                }
-            }
-            if let msg = model.subscriptionRenewMessage {
-                Text(msg)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .onChange(of: model.activeGrokEmail) { _ in
-            editingSubscriptionRenew = false
         }
     }
 
