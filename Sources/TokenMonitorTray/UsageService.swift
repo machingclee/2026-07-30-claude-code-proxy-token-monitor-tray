@@ -338,6 +338,14 @@ enum UsageService {
         return parts.joined(separator: " ")
     }
 
+    /// Account list: `Resets in 4d 23h 12m` (or `Reset due` when past end).
+    static func resetsInLabel(until end: Date?) -> String {
+        guard let end else { return "?" }
+        let secs = Int(end.timeIntervalSinceNow)
+        if secs <= 0 { return "Reset due" }
+        return "Resets in \(remainingLabel(until: end))"
+    }
+
     /// Fractional days until reset for compact UI, e.g. `1.23d`.
     static func remainingDaysCompact(until end: Date?) -> String {
         guard let end else { return "?" }

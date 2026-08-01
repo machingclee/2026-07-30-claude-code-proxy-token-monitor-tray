@@ -113,16 +113,22 @@ enum GrokWeeklyResetStore {
         return UsageService.remainingDaysCompact(until: rec.weeklyEnd)
     }
 
-    /// Human remaining (`4d 23h 54m`) from a stored weeklyEnd — for account list.
+    /// Human remaining (`4d 23h 54m`) from a stored weeklyEnd.
     static func remainingLabel(for email: String?) -> String? {
         guard let rec = record(for: email) else { return nil }
         return UsageService.remainingLabel(until: rec.weeklyEnd)
     }
 
-    /// Panel account list: `padgnoehc / 4d 23h 54m`
+    /// `Resets in 4d 23h 12m` from a stored weeklyEnd — for account list.
+    static func resetsInLabel(for email: String?) -> String? {
+        guard let rec = record(for: email) else { return nil }
+        return UsageService.resetsInLabel(until: rec.weeklyEnd)
+    }
+
+    /// Panel account list: `padgnoehc / Resets in 4d 23h 12m`
     static func accountLabel(email: String) -> String {
         let name = shortName(email)
-        if let rem = remainingLabel(for: email) {
+        if let rem = resetsInLabel(for: email) {
             return "\(name) / \(rem)"
         }
         return name

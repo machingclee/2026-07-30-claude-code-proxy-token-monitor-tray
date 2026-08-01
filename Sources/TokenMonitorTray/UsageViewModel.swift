@@ -611,13 +611,13 @@ final class UsageViewModel: ObservableObject {
         return isLoading ? "…" : "—"
     }
 
-    /// Account row label: `padgnoehc / 4d 23h 54m` from cache (or live if active).
+    /// Account row label: `padgnoehc / Resets in 4d 23h 12m` from cache (or live if active).
     func grokAccountRowLabel(_ email: String) -> String {
         // Prefer live weekly end when this email is active and we just fetched.
         if let active = activeGrokEmail ?? GrokAccountStore.activeEmail(),
            active.caseInsensitiveCompare(email) == .orderedSame,
            let grok, let end = grok.weeklyEnd {
-            let rem = UsageService.remainingLabel(until: end)
+            let rem = UsageService.resetsInLabel(until: end)
             return "\(GrokWeeklyResetStore.shortName(email)) / \(rem)"
         }
         return GrokWeeklyResetStore.accountLabel(email: email)

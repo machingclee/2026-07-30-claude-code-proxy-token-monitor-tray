@@ -1,98 +1,139 @@
 import SwiftUI
 import AppKit
 
+/// Intrinsic height of the panel body (for dynamic MenuBarExtra sizing).
+private struct PanelContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: UsageViewModel
     /// Sections start collapsed; expand is exclusive (Grok ↔ DeepSeek accordion).
     @State private var expandedIds: Set<String> = []
+    /// Nested DeepSeek config (API key / URL / models) — collapsed by default.
+    @State private var deepseekConfigExpanded = false
+    /// Measured body height; panel window hugs this (capped by `maxPanelHeight`).
+    @State private var contentHeight: CGFloat = 0
 
-    /// Fixed panel size so expand/collapse does not resize the MenuBarExtra window
-    /// (height changes otherwise re-anchor the panel and it jumps up/across the screen).
     private let panelWidth: CGFloat = 420
-    private let panelHeight: CGFloat = 560
+    private let minPanelHeight: CGFloat = 160
+
+    /// Cap so a fully expanded panel still fits under the menu bar and can scroll.
+    private var maxPanelHeight: CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 900
+        return min(720, floor(visible * 0.78))
+    }
+
+    private var panelHeight: CGFloat {
+        let measured = contentHeight > 0 ? contentHeight : minPanelHeight
+        return min(max(measured, minPanelHeight), maxPanelHeight)
+    }
+
+    private var contentExceedsMax: Bool {
+        contentHeight > maxPanelHeight + 0.5
+    }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                Divider()
-
-                if model.grok == nil && model.deepseek == nil
-                    && model.grokError == nil && model.deepseekError == nil
-                    && model.isLoading {
-                    HStack {
-                        ProgressView()
-                            .controlSize(.regular)
-                        Text("Loading usage…")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    collapsibleUsage(
-                        id: "usage:grok",
-                        title: "Grok",
-                        icon: .grok,
-                        summary: model.grokMenuLabel,
-                        error: model.grokError,
-                        provider: model.provider(for: .grok)
-                    ) {
-                        // Accounts → Save (if needed) → Activate / proxy → usage.
-                        grokAccountsSection
-                        if let snap = model.grok {
-                            weeklySection(snap)
-                        } else if model.grokError == nil {
-                            Text("Loading…").font(.body).foregroundStyle(.secondary)
-                        }
-                    }
-
-                    collapsibleUsage(
-                        id: "usage:deepseek",
-                        title: "DeepSeek",
-                        icon: .deepseek,
-                        summary: model.deepseekMenuLabel,
-                        error: model.deepseekError,
-                        provider: model.provider(for: .deepseek)
-                    ) {
-                        deepseekLocalSection
-                        if let snap = model.deepseek {
-                            deepseekSection(snap)
-                        } else if model.deepseekError == nil {
-                            Text("Save an API key below, then Refresh.")
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if let msg = model.switchMessage {
-                    Text(msg)
-                        .font(.body)
-                        .foregroundStyle(
-                            msg.contains("Activated") || msg.contains("Already")
-                                ? Color.secondary : Color.orange
+        ScrollView(.vertical, showsIndicators: contentExceedsMax) {
+            panelBody
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: PanelContentHeightKey.self,
+                            value: geo.size.height
                         )
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let err = model.providersError {
-                    Text(err)
-                        .font(.body)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Divider()
-                settingsRow
-                Divider()
-                footer
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                )
+        }
+        .onPreferenceChange(PanelContentHeightKey.self) { h in
+            guard h > 0, abs(h - contentHeight) > 0.5 else { return }
+            contentHeight = h
         }
         .frame(width: panelWidth, height: panelHeight, alignment: .top)
         .menuBarPanelFade(fadeIn: 0.18, fadeOut: 0.22)
         .onAppear { model.setPanelOpen(true) }
         .onDisappear { model.setPanelOpen(false) }
+    }
+
+    private var panelBody: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            Divider()
+
+            if model.grok == nil && model.deepseek == nil
+                && model.grokError == nil && model.deepseekError == nil
+                && model.isLoading {
+                HStack {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Loading usage…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                collapsibleUsage(
+                    id: "usage:grok",
+                    title: "Grok",
+                    icon: .grok,
+                    summary: model.grokMenuLabel,
+                    error: model.grokError,
+                    provider: model.provider(for: .grok)
+                ) {
+                    // Accounts → Save (if needed) → Activate / proxy → usage.
+                    grokAccountsSection
+                    if let snap = model.grok {
+                        weeklySection(snap)
+                    } else if model.grokError == nil {
+                        Text("Loading…").font(.body).foregroundStyle(.secondary)
+                    }
+                }
+
+                collapsibleUsage(
+                    id: "usage:deepseek",
+                    title: "DeepSeek",
+                    icon: .deepseek,
+                    summary: model.deepseekMenuLabel,
+                    error: model.deepseekError,
+                    provider: model.provider(for: .deepseek)
+                ) {
+                    deepseekLocalSection
+                    if let snap = model.deepseek {
+                        deepseekSection(snap)
+                    } else if model.deepseekError == nil {
+                        Text("Save an API key below, then Refresh.")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let msg = model.switchMessage {
+                Text(msg)
+                    .font(.body)
+                    .foregroundStyle(
+                        msg.contains("Activated") || msg.contains("Already")
+                            ? Color.secondary : Color.orange
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let err = model.providersError {
+                Text(err)
+                    .font(.body)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+            settingsRow
+            Divider()
+            footer
+        }
+        .padding(16)
+        .frame(width: panelWidth, alignment: .topLeading)
     }
 
     // MARK: - Header / settings / footer
@@ -330,7 +371,7 @@ struct ContentView: View {
             } else {
                 ForEach(model.grokProfiles) { p in
                     HStack(spacing: 6) {
-                        // e.g. "padgnoehc / 4d 23h 54m" — from cached weekly_end, live if active.
+                        // e.g. "padgnoehc / Resets in 4d 23h 12m" — from cached weekly_end, live if active.
                         Text(model.grokAccountRowLabel(p.email))
                             .font(.body.monospacedDigit())
                             .lineLimit(1)
@@ -474,15 +515,7 @@ struct ContentView: View {
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             usageBar(percent: snap.weeklyPercent)
-            row("Used", String(format: "%.1f%%", snap.weeklyPercent))
-            row("Left", String(format: "~%.1f%%", snap.weeklyLeft))
-            // Days until reset already shown in menu bar (`65% / 5.33d`) and account rows.
-            row("Resets at", "\(UsageService.formatDate(snap.weeklyEnd))  (\(snap.weeklyRemainingLabel))")
-            if !snap.productLines.isEmpty {
-                ForEach(Array(snap.productLines.enumerated()), id: \.offset) { _, p in
-                    row(p.name, String(format: "%.1f%%", p.percent))
-                }
-            }
+            // Used / Left / Resets at / product lines omit — bar + account "Resets in …" cover this.
             Text(snap.source)
                 .font(.body)
                 .foregroundStyle(.tertiary)
@@ -490,83 +523,108 @@ struct ContentView: View {
         }
     }
 
-    /// Tray-local DeepSeek config + Activate (no CC Switch).
+    /// Tray-local DeepSeek: collapsible config; Activate for Claude Code always visible.
     private var deepseekLocalSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("DeepSeek (local config)")
-                .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-
-            Text("Stored under Application Support for this app — not CC Switch, not ~/.grok.")
-                .font(.body)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("API key")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    Group {
-                        if model.showDeepSeekKey {
-                            TextField("sk-…", text: $model.deepseekAPIKeyDraft)
-                        } else {
-                            SecureField("sk-…", text: $model.deepseekAPIKeyDraft)
-                        }
-                    }
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-                    Button {
-                        model.showDeepSeekKey.toggle()
-                    } label: {
-                        Image(systemName: model.showDeepSeekKey ? "eye.slash" : "eye")
-                    }
-                    .buttonStyle(.borderless)
-                    .help(model.showDeepSeekKey ? "Hide key" : "Show key")
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Base URL (Claude Code)")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                TextField("https://api.deepseek.com", text: $model.deepseekBaseURLDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-            }
-
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Pro model")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                    TextField("deepseek-v4-pro[1m]", text: $model.deepseekProModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.body)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Flash model")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                    TextField("deepseek-v4-flash", text: $model.deepseekFlashModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.body)
-                }
-            }
-
+            // Config (API key / URL / models) — nested collapsible.
             Button {
-                model.saveDeepSeekConfigFromDrafts()
+                deepseekConfigExpanded.toggle()
             } label: {
-                Text("Save DeepSeek config")
-                    .frame(maxWidth: .infinity)
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(deepseekConfigExpanded ? 90 : 0))
+                        .animation(.easeInOut(duration: 0.15), value: deepseekConfigExpanded)
+                        .frame(width: 12)
+                    Text("DeepSeek (local config)")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    if !deepseekConfigExpanded {
+                        Text("API key · models")
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .contentShape(Rectangle())
+                .padding(.vertical, 2)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
+            .buttonStyle(.plain)
 
+            if deepseekConfigExpanded {
+                Text("Stored under Application Support for this app — not CC Switch, not ~/.grok.")
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("API key")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Group {
+                            if model.showDeepSeekKey {
+                                TextField("sk-…", text: $model.deepseekAPIKeyDraft)
+                            } else {
+                                SecureField("sk-…", text: $model.deepseekAPIKeyDraft)
+                            }
+                        }
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body)
+                        Button {
+                            model.showDeepSeekKey.toggle()
+                        } label: {
+                            Image(systemName: model.showDeepSeekKey ? "eye.slash" : "eye")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(model.showDeepSeekKey ? "Hide key" : "Show key")
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Base URL (Claude Code)")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                    TextField("https://api.deepseek.com", text: $model.deepseekBaseURLDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body)
+                }
+
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Pro model")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                        TextField("deepseek-v4-pro[1m]", text: $model.deepseekProModelDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Flash model")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                        TextField("deepseek-v4-flash", text: $model.deepseekFlashModelDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body)
+                    }
+                }
+
+                Button {
+                    model.saveDeepSeekConfigFromDrafts()
+                } label: {
+                    Text("Save DeepSeek config")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+            }
+
+            // Always visible (outside config collapse).
             Text("Activate for Claude Code")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
-                .padding(.top, 4)
+                .padding(.top, deepseekConfigExpanded ? 4 : 0)
 
             ForEach(DeepSeekConfigStore.Variant.allCases) { variant in
                 HStack(spacing: 6) {
