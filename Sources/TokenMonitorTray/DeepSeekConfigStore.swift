@@ -46,15 +46,18 @@ enum DeepSeekConfigStore {
             }
         }
 
-        /// Default Anthropic-compatible model id for Claude Code.
-        /// Both use lowercase context tag `[1m]` for consistent UI (not mixed `1m` / `1M`).
+        /// Default model id shown in the tray for this variant.
         var defaultModel: String {
             switch self {
             case .pro: return "deepseek-v4-pro[1m]"
-            case .flash: return "deepseek-v4-flash[1m]"
+            case .flash: return "deepseek-v4-flash"
             }
         }
     }
+
+    /// Fixed Claude Code env for **Pro** Activate (exact mapping).
+    private static let proPrimaryModel = "deepseek-v4-pro[1m]"
+    private static let proHaikuSubagentModel = "deepseek-v4-flash"
 
     struct Config: Equatable {
         var apiKey: String
@@ -171,7 +174,6 @@ enum DeepSeekConfigStore {
         let key = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw StoreError.noAPIKey }
 
-        let model = normalizeContextTag(config.model(for: variant))
         let base = config.anthropicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let baseURL = base.isEmpty ? Config.default.anthropicBaseURL : base
 
@@ -183,18 +185,33 @@ enum DeepSeekConfigStore {
         var env = (root["env"] as? [String: Any]) ?? [:]
 
         // Claude Code Anthropic-compatible env for DeepSeek.
-        // Use only ANTHROPIC_AUTH_TOKEN — setting both AUTH_TOKEN and API_KEY makes
-        // Claude Code warn: "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set".
+        // Use only ANTHROPIC_AUTH_TOKEN — never also ANTHROPIC_API_KEY (Claude Code warns).
         env["ANTHROPIC_BASE_URL"] = baseURL
         env["ANTHROPIC_AUTH_TOKEN"] = key
         env.removeValue(forKey: "ANTHROPIC_API_KEY")
-        env["ANTHROPIC_MODEL"] = model
-        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
-        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
-        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
-        env["ANTHROPIC_SMALL_FAST_MODEL"] = model
-        // Keep DEEPSEEK_API_KEY for tray balance fetch / non-Claude tools only.
         env["DEEPSEEK_API_KEY"] = key
+
+        switch variant {
+        case .pro:
+            // Exact Pro mapping (primary + cheaper Haiku/subagent models).
+            env["ANTHROPIC_MODEL"] = proPrimaryModel
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = proPrimaryModel
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = proPrimaryModel
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = proHaikuSubagentModel
+            env["CLAUDE_CODE_SUBAGENT_MODEL"] = proHaikuSubagentModel
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
+            env.removeValue(forKey: "ANTHROPIC_SMALL_FAST_MODEL")
+        case .flash:
+            let flash = normalizeContextTag(config.model(for: .flash))
+            let flashModel = flash.isEmpty ? Variant.flash.defaultModel : flash
+            env["ANTHROPIC_MODEL"] = flashModel
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = flashModel
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = flashModel
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = flashModel
+            env["CLAUDE_CODE_SUBAGENT_MODEL"] = flashModel
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
+            env.removeValue(forKey: "ANTHROPIC_SMALL_FAST_MODEL")
+        }
 
         root["env"] = env
 

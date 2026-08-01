@@ -42,7 +42,7 @@ struct ContentView: View {
                         grokAccountsSection
                         if let snap = model.grok {
                             weeklySection(snap)
-                            monthlySection(snap)
+                            subscriptionRenewSection
                         } else if model.grokError == nil {
                             Text("Loading…").font(.body).foregroundStyle(.secondary)
                         }
@@ -397,7 +397,7 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .disabled(model.isLaunchingProxy || model.isSwitching || model.isSwitchingGrokAccount)
-                .help("Shown when SuperGrok usage cannot be loaded. Runs grok login; not needed while weekly/monthly fetch works.")
+                .help("Shown when SuperGrok weekly usage cannot be loaded. Runs grok login; not needed while weekly fetch works.")
                 .padding(.top, 8)
             }
 
@@ -467,12 +467,18 @@ struct ContentView: View {
 
     private func weeklySection(_ snap: UsageService.Snapshot) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Weekly")
+            Text("SuperGrok weekly limit")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
+            Text("This is the pool that rate-limits you. There is no separate SuperGrok monthly quota to monitor.")
+                .font(.body)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
             usageBar(percent: snap.weeklyPercent)
+            row("Used", String(format: "%.1f%%", snap.weeklyPercent))
             row("Left", String(format: "~%.1f%%", snap.weeklyLeft))
-            row("Reset", "\(UsageService.formatDate(snap.weeklyEnd))  (in \(snap.weeklyRemainingLabel))")
+            row("Resets in", snap.weeklyRemainingDaysCompact)
+            row("Resets at", "\(UsageService.formatDate(snap.weeklyEnd))  (\(snap.weeklyRemainingLabel))")
             if !snap.productLines.isEmpty {
                 ForEach(Array(snap.productLines.enumerated()), id: \.offset) { _, p in
                     row(p.name, String(format: "%.1f%%", p.percent))
@@ -485,34 +491,17 @@ struct ContentView: View {
         }
     }
 
-    private func monthlySection(_ snap: UsageService.Snapshot) -> some View {
+    /// Optional card renew day only (not a SuperGrok usage quota).
+    private var subscriptionRenewSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Monthly usage (API calendar window)")
-                .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.top, 4)
-            if let used = snap.monthlyUsed, let limit = snap.monthlyLimit {
-                let pct = snap.monthlyPercent ?? 0
-                Text(String(format: "%.0f / %.0f", used, limit))
-                    .font(.body.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                usageBar(percent: pct)
-            } else {
-                Text("No monthly data")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
-            // Calendar usage window from CLI API — not SuperGrok card renew day.
-            row("Period", "\(UsageService.formatDate(snap.monthlyStart)) → \(UsageService.formatDate(snap.monthlyEnd))")
-            row(
-                "Period ends",
-                "\(UsageService.formatDate(snap.monthlyEnd))  (in \(snap.monthlyRemainingLabel))"
-            )
-
-            Text("Subscription renew")
+            Text("Subscription renew (optional)")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)
+            Text("Billing/card renew day from grok.com — not a monthly usage limit.")
+                .font(.body)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(alignment: .center, spacing: 8) {
                 Text("Next renew")
@@ -628,7 +617,7 @@ struct ContentView: View {
                     Text("Flash model")
                         .font(.body)
                         .foregroundStyle(.secondary)
-                    TextField("deepseek-v4-flash[1m]", text: $model.deepseekFlashModelDraft)
+                    TextField("deepseek-v4-flash", text: $model.deepseekFlashModelDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.body)
                 }

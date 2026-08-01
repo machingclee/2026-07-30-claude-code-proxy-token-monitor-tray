@@ -176,7 +176,12 @@ final class UsageViewModel: ObservableObject {
 
             reloadProviders()
             reloadGrokProfiles()
-            let modelName = activated.model(for: variant)
+            let modelName: String = {
+                switch variant {
+                case .pro: return "deepseek-v4-pro[1m] + haiku/subagent deepseek-v4-flash"
+                case .flash: return activated.model(for: .flash)
+                }
+            }()
             deepseekConfigMessage =
                 "Activated DeepSeek \(variant.label) (\(modelName)) · other methods inactive · Restart Claude Code"
             Task {
@@ -376,14 +381,7 @@ final class UsageViewModel: ObservableObject {
                 await refresh(force: true)
                 var msg = "Active: \(shown) · usage refreshed"
                 if let g = grok {
-                    let weekly = String(format: "%.0f%%", g.weeklyPercent)
-                    let monthly: String = {
-                        if let u = g.monthlyUsed, let lim = g.monthlyLimit {
-                            return String(format: "%.0f/%.0f", u, lim)
-                        }
-                        return "—"
-                    }()
-                    msg += " · weekly \(weekly) / monthly \(monthly)"
+                    msg += " · \(g.menuBarTitle)"
                 }
                 if wasProxy {
                     msg += " · proxy restarted"
@@ -665,16 +663,9 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Weekly usage % for Grok tray (upper line).
+    /// SuperGrok weekly usage % (the only rate-limit that matters day to day).
     var grokWeeklyLabel: String {
         if let grok { return grok.menuBarTitle }
-        if grokError != nil { return "!" }
-        return isLoading ? "…" : "—"
-    }
-
-    /// Monthly usage % for Grok tray (lower line).
-    var grokMonthlyLabel: String {
-        if let grok { return grok.menuBarMonthlyTitle }
         if grokError != nil { return "!" }
         return isLoading ? "…" : "—"
     }
@@ -690,20 +681,16 @@ final class UsageViewModel: ObservableObject {
     }
 
     /// Single-line tray label next to the icon.
-    /// Grok: `weekly% / monthly%` (e.g. `88% / 59%`).
+    /// Grok: `88%/1.23d` = weekly used % / days until weekly reset. DeepSeek: balance (e.g. `$28`).
     var menuBarTitle: String {
         switch activeKind {
         case .deepseek:
             return deepseekMenuLabel
         case .grok:
-            return "\(grokWeeklyLabel) / \(grokMonthlyLabel)"
+            return grokWeeklyLabel
         case .other:
-            if grok != nil {
-                return "\(grokWeeklyLabel) / \(grokMonthlyLabel)"
-            }
-            if deepseek != nil {
-                return deepseekMenuLabel
-            }
+            if grok != nil { return grokWeeklyLabel }
+            if deepseek != nil { return deepseekMenuLabel }
             return isLoading ? "…" : "—"
         }
     }

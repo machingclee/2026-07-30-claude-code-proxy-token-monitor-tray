@@ -60,12 +60,18 @@ enum UsageService {
             remainingLabel(until: weeklyEnd)
         }
 
+        /// Compact “days until reset”, e.g. `1.23d`.
+        var weeklyRemainingDaysCompact: String {
+            remainingDaysCompact(until: weeklyEnd)
+        }
+
         var monthlyRemainingLabel: String {
             remainingLabel(until: monthlyEnd)
         }
 
+        /// Menu bar: `65% / 5.33d` = weekly used % · padded slash · days until weekly reset.
         var menuBarTitle: String {
-            String(format: "%.0f%%", weeklyPercent)
+            String(format: "%.0f%% / %@", weeklyPercent, weeklyRemainingDaysCompact)
         }
 
         /// Monthly usage as a percent string for the tray (calendar window).
@@ -193,10 +199,9 @@ enum UsageService {
 
     static func fetchSnapshot() async throws -> Snapshot {
         let auth = try loadToken()
-        async let weeklyRaw = getJSON(url: billingCredits, token: auth.token)
-        async let monthlyRaw = getJSON(url: billingMonthly, token: auth.token)
-        let (weekly, monthly) = try await (weeklyRaw, monthlyRaw)
-        return parse(weekly: weekly, monthly: monthly, source: auth.source)
+        // SuperGrok rate limit is the weekly shared pool only — skip monthly billing window.
+        let weekly = try await getJSON(url: billingCredits, token: auth.token)
+        return parse(weekly: weekly, source: auth.source)
     }
 
     private static func getJSON(url: URL, token: String) async throws -> [String: Any] {
@@ -232,7 +237,7 @@ enum UsageService {
 
     // MARK: - Parse (aligned with gm)
 
-    private static func parse(weekly: [String: Any], monthly: [String: Any], source: String) -> Snapshot {
+    private static func parse(weekly: [String: Any], source: String) -> Snapshot {
         let wcfg = dict(weekly["config"]) ?? [:]
         let period = dict(wcfg["currentPeriod"]) ?? [:]
         let start = parseDate(stringValue(period["start"]) ?? stringValue(wcfg["billingPeriodStart"]))
@@ -248,12 +253,6 @@ enum UsageService {
             }
         }
 
-        let mcfg = dict(monthly["config"]) ?? [:]
-        let mUsed = unwrapVal(mcfg["used"]).flatMap(doubleValue)
-        let mLimit = unwrapVal(mcfg["monthlyLimit"]).flatMap(doubleValue)
-        let mStart = parseDate(stringValue(mcfg["billingPeriodStart"]))
-        let mEnd = parseDate(stringValue(mcfg["billingPeriodEnd"]))
-
         return Snapshot(
             source: source,
             weeklyPercent: pct,
@@ -264,10 +263,10 @@ enum UsageService {
             prepaid: doubleValue(unwrapVal(wcfg["prepaidBalance"])) ?? 0,
             onDemandUsed: doubleValue(unwrapVal(wcfg["onDemandUsed"])) ?? 0,
             onDemandCap: doubleValue(unwrapVal(wcfg["onDemandCap"])) ?? 0,
-            monthlyUsed: mUsed,
-            monthlyLimit: mLimit,
-            monthlyStart: mStart,
-            monthlyEnd: mEnd,
+            monthlyUsed: nil,
+            monthlyLimit: nil,
+            monthlyStart: nil,
+            monthlyEnd: nil,
             fetchedAt: Date()
         )
     }
@@ -337,5 +336,14 @@ enum UsageService {
         if hours > 0 || days > 0 { parts.append("\(hours)h") }
         parts.append("\(mins)m")
         return parts.joined(separator: " ")
+    }
+
+    /// Fractional days until reset for compact UI, e.g. `1.23d`.
+    static func remainingDaysCompact(until end: Date?) -> String {
+        guard let end else { return "?" }
+        let days = end.timeIntervalSinceNow / 86_400.0
+        if days <= 0 { return "0d" }
+        // Two decimals: 1.23d ≈ 1 day + ~5.5 hours.
+        return String(format: "%.2fd", days)
     }
 }

@@ -9,7 +9,7 @@ macOS **menu bar** app for SuperGrok usage, multi-account Grok login, DeepSeek b
 | **Product name** | Claude-Code-Proxy Token Monitor Tray (`.app` display name) |
 | **Executable / module** | `TokenMonitorTray` (Swift package + `Contents/MacOS/TokenMonitorTray`) |
 | **CLI launcher** | `token-monitor-tray` (`gm-tray` kept as a thin compat alias) |
-| Menu bar (Grok active) | Grok mark + `weekly% / monthly%` (e.g. `88% / 59%`) |
+| Menu bar (Grok active) | Grok mark + `65% / 5.33d` — weekly used % · days until weekly reset |
 | Menu bar (DeepSeek active) | Whale mark + prepaid balance (e.g. `$28`) |
 | Panel | **Accordion**: expand Grok **or** DeepSeek (not both) |
 | Poll | Every **20s** in background; every **5s** while the panel is open |
@@ -160,7 +160,7 @@ Recipient: unzip → move to Applications → open (if blocked: right-click Open
 - Multi-account profiles under `~/.grok/profiles/`
 - **Grok login** in Terminal (standard CLI; one browser Approve)
 - **Activate** runs a **live billing API** check — re-login only on 401/403
-- After a successful Activate, usage is **force-refreshed** (weekly + monthly)
+- After a successful Activate, **weekly** usage is **force-refreshed**
 - Optional SuperGrok **subscription renew** date (manual, per email)
 - **Launch / Stop claude-code-proxy** only if the binary is installed (or port 18765 is already in use)
 
@@ -211,7 +211,7 @@ open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
 
 | Live Claude method (`~/.claude/settings.json`) | Tray shows |
 | --- | --- |
-| Grok (e.g. base `http://127.0.0.1:18765`) | Grok mark + `weekly% / monthly%` |
+| Grok (e.g. base `http://127.0.0.1:18765`) | Grok mark + weekly `%` only |
 | DeepSeek (base/model contains deepseek) | DeepSeek mark + balance |
 
 ---
@@ -248,14 +248,14 @@ Accounts are listed **A→Z by email**. Activating only moves the checkmark.
 | --- | --- |
 | Switch profile | Copies that profile onto `~/.grok/auth.json` and syncs proxy auth file if needed |
 | Live check | `GET` SuperGrok billing/usage API with the active CLI token |
-| **OK (2xx)** | Sync proxy auth, clear DeepSeek “active”, point Claude at Grok proxy, **restart proxy** if it was running (or start it if installed), **force-refresh** weekly/monthly |
+| **OK (2xx)** | Sync proxy auth, clear DeepSeek “active”, point Claude at Grok proxy, **restart proxy** if it was running (or start it if installed), **force-refresh** weekly usage |
 | **401 / 403** | Tokens dead → stop proxy, prompt **Grok login** (no silent re-auth) |
 | Network error | Switch files may still apply; message notes the check failed |
 
 After success you should see something like:
 
 ```text
-Active: you@gmail.com · usage refreshed · weekly 42% / monthly …
+Active: you@gmail.com · usage refreshed · weekly 42%
 ```
 
 ### Grok login
@@ -290,19 +290,23 @@ brew install claude-code-proxy   # optional
 
 Restart Claude Code after changing the active method (Grok ↔ DeepSeek).
 
-### Weekly vs monthly
+### SuperGrok usage (weekly only)
 
-| Metric | Meaning |
+SuperGrok’s rate limit is a **shared weekly pool**. The tray monitors that only.
+
+| UI | Meaning |
 | --- | --- |
-| Weekly % | SuperGrok shared weekly pool (usually what blocks you) |
-| Monthly % | Calendar-month window from the CLI billing API |
-| Period ends | End of that API monthly window — **not** card renew day |
+| Menu bar `65% / 5.33d` | Weekly pool used · fractional days until reset |
+| **SuperGrok weekly limit** | Bar + % used/left + `1.23d` + wall-clock reset |
+| **Subscription renew** (optional) | Card/billing day on grok.com — **not** a monthly usage quota |
 
-### SuperGrok subscription renew (manual)
+There is **no** separate SuperGrok “monthly usage monitor” in the tray (the old CLI billing-period bar was removed as misleading).
 
-Real renew day is on **grok.com → Billing**, not in the CLI API.
+### SuperGrok subscription renew (manual, optional)
 
-1. Expand Grok → monthly area → **Next renew**  
+Real renew day is on **grok.com → Billing**, not a usage limit.
+
+1. Expand Grok → **Subscription renew**  
 2. **Update** → `yyyy-MM-dd` → **Save**  
 3. **Clear** removes the date for the **current** email only  
 
@@ -378,7 +382,7 @@ rm -f ~/.config/claude-code-proxy/grok/auth.json \
 ## Related CLI tools (optional)
 
 ```bash
-gm              # Grok weekly + monthly (terminal)
+gm              # Grok usage (terminal)
 ds              # DeepSeek balance (terminal)
 ccs             # CC Switch from the terminal
 ```
