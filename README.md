@@ -159,7 +159,8 @@ Recipient: unzip → move to Applications → open (if blocked: right-click Open
 
 - Multi-account profiles under `~/.grok/profiles/`
 - **Grok login** in Terminal (standard CLI; one browser Approve)
-- **Activate** runs a **live billing API** check — re-login only on 401/403
+- **Silent OIDC refresh** (~15 min before access expiry): updates `~/.grok/auth.json`, proxy auth, and the matching saved profile
+- **Activate** runs a **live billing API** check — re-login only on 401/403 (or when refresh token is dead)
 - After a successful Activate, **weekly** usage is **force-refreshed**
 - **Launch / Stop claude-code-proxy** only if the binary is installed (or port 18765 is already in use)
 
@@ -407,6 +408,7 @@ Sources/TokenMonitorTray/
   ContentView.swift               Panel UI (accordion Grok / DeepSeek)
   UsageViewModel.swift            Poll, Activate, login script, proxy, DeepSeek drafts
   UsageService.swift              Grok billing APIs + live auth probe
+  GrokAuthRefresh.swift           OIDC silent refresh for ~/.grok/auth.json
   DeepSeekService.swift           Balance API
   DeepSeekConfigStore.swift       Local DeepSeek config + Activate (Application Support)
   GrokAccountStore.swift          ~/.grok/auth.json + profiles + proxy auth sync

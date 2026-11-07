@@ -43,6 +43,11 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var isActivatingDeepSeek = false
     @Published var showDeepSeekKey = false
 
+    /// Grok model ids for Claude settings (main + fast/subagent). Application Support.
+    @Published var grokMainModelDraft = GrokModelsConfigStore.defaultMainModel
+    @Published var grokFastModelDraft = GrokModelsConfigStore.defaultFastModel
+    @Published var grokModelsMessage: String?
+
     /// True while the menu bar panel is open (drives faster 5s polling).
     @Published var isPanelOpen = false
 
@@ -79,8 +84,42 @@ final class UsageViewModel: ObservableObject {
         refreshProxyStatus()
         reloadGrokProfiles()
         reloadDeepSeekConfig()
+        reloadGrokModelsConfig()
         Task { await refresh() }
         startBackgroundPolling()
+    }
+
+    func reloadGrokModelsConfig() {
+        let c = GrokModelsConfigStore.load()
+        grokMainModelDraft = c.mainModel
+        grokFastModelDraft = c.fastModel
+    }
+
+    /// Persist main/fast model ids; optionally rewrite Claude settings if Grok is active.
+    func saveGrokModelsConfigFromDrafts(applyIfGrokActive: Bool = true) {
+        var c = GrokModelsConfigStore.Config(
+            mainModel: grokMainModelDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+            fastModel: grokFastModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        if c.mainModel.isEmpty { c.mainModel = GrokModelsConfigStore.defaultMainModel }
+        if c.fastModel.isEmpty { c.fastModel = GrokModelsConfigStore.defaultFastModel }
+        grokMainModelDraft = c.mainModel
+        grokFastModelDraft = c.fastModel
+        do {
+            try GrokModelsConfigStore.save(c)
+            if applyIfGrokActive, activeKind == .grok {
+                try applyGrokClaudeSettingsIfPossible()
+                grokModelsMessage = "Saved + applied to ~/.claude/settings.json (main \(c.mainModel), fast \(c.fastModel)). Restart Claude Code."
+            } else {
+                grokModelsMessage = "Saved Grok models (applied on next Grok Activate)."
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if grokModelsMessage != nil { grokModelsMessage = nil }
+            }
+        } catch {
+            grokModelsMessage = error.localizedDescription
+        }
     }
 
     func reloadDeepSeekConfig() {
@@ -172,8 +211,10 @@ final class UsageViewModel: ObservableObject {
             reloadGrokProfiles()
             let modelName: String = {
                 switch variant {
-                case .pro: return "deepseek-v4-pro[1m] + haiku/subagent deepseek-v4-flash"
-                case .flash: return activated.model(for: .flash)
+                case .pro:
+                    return "\(activated.model(for: .pro)) + haiku/subagent \(activated.model(for: .flash))"
+                case .flash:
+                    return activated.model(for: .flash)
                 }
             }()
             deepseekConfigMessage =
@@ -206,12 +247,30 @@ final class UsageViewModel: ObservableObject {
         env["ANTHROPIC_AUTH_TOKEN"] = "unused"
         // Critical: dual auth vars trigger Claude Code warning even on Grok/proxy.
         env.removeValue(forKey: "ANTHROPIC_API_KEY")
+        // Main chat → configured main (default grok-4.6); Haiku/subagent → fast model.
+        // Always overwrite DeepSeek leftovers so subagent never keeps deepseek-v4-flash.
+        let stored = GrokModelsConfigStore.load()
+        let draftMain = grokMainModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draftFast = grokFastModelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let grokMain = draftMain.isEmpty
+            ? (stored.mainModel.isEmpty ? GrokModelsConfigStore.defaultMainModel : stored.mainModel)
+            : draftMain
+        let grokFast = draftFast.isEmpty
+            ? (stored.fastModel.isEmpty ? GrokModelsConfigStore.defaultFastModel : stored.fastModel)
+            : draftFast
         for k in [
-            "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_SMALL_FAST_MODEL",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
         ] {
-            env[k] = "grok-4.5"
+            env[k] = grokMain
+        }
+        for k in [
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ] {
+            env[k] = grokFast
         }
         env.removeValue(forKey: "DEEPSEEK_API_KEY")
         root["env"] = env
@@ -753,7 +812,8 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Start official binary: `claude-code-proxy serve --no-monitor` (no `ccs` required).
+    /// Start preferred `claude-code-proxy serve --no-monitor` (no `ccs` required).
+    /// Prefers the local grok-4.6 patch when `ccs` flavor is patched.
     /// Syncs the tray-selected Grok login into the proxy auth file first (split auth stores).
     func launchClaudeCodeProxy() {
         guard !isLaunchingProxy else { return }
@@ -864,89 +924,65 @@ final class UsageViewModel: ObservableObject {
         let browserHelperURL = logDir.appendingPathComponent("open-incognito-browser.sh")
         let deviceLoginURL = logDir.appendingPathComponent("run-device-login-incognito.py")
         let saveProfileURL = logDir.appendingPathComponent("save-grok-profile-after-login.py")
+        let openShimDir = logDir.appendingPathComponent("path-shim", isDirectory: true)
+        let openShimURL = openShimDir.appendingPathComponent("open")
+        let browserNoopURL = logDir.appendingPathComponent("browser-noop.sh")
 
-        // Browser helper: ONLY open a single URL in the real Chrome profile.
-        // Multi-step OAuth (logout → chooser → wait for Return → device URL) is
-        // orchestrated by run-device-login so we can block on the Terminal TTY.
-        // Optional: GROK_OAUTH_CLEAN=1 → temporary empty Chrome profile.
+        // Always open a visible Chrome tab. Prefer `open location` (new tab);
+        // fall back to `open -a` if AppleScript is denied.
         let browserHelper = #"""
         #!/bin/zsh
-        # Open $1 in YOUR real Chrome profile (last_used from Local State).
         set +e
         URL="${1:-}"
         if [[ -z "$URL" ]]; then
           echo "open-oauth-browser: missing URL" >&2
           exit 2
         fi
-
-        temp_oauth_chrome_pids() {
-          ps -axo pid=,command= 2>/dev/null | awk '
-            /Google Chrome\.app\/Contents\// && /user-data-dir=/ && /grok-oauth-chrome/ { print $1 }
-          '
-        }
-        real_chrome_main_pids() {
-          ps -axo pid=,command= 2>/dev/null | awk '
-            /Google Chrome\.app\/Contents\/MacOS\/Google Chrome/ && $0 !~ /user-data-dir=/ { print $1 }
-            /Google Chrome\.app\/Contents\/MacOS\/Google Chrome/ && /Application Support\/Google\/Chrome/ { print $1 }
-          '
-        }
-        kill_temp_oauth_chromes() {
-          local pids
-          pids="$(temp_oauth_chrome_pids)"
-          if [[ -n "$pids" ]]; then
-            echo "→ Force-closing leftover temp OAuth Chrome…" >&2
-            # shellcheck disable=SC2086
-            kill -9 $pids 2>/dev/null || true
-            sleep 0.3
-          fi
-        }
-        kill_temp_oauth_chromes
-
-        resolve_chrome_profile_dir() {
-          python3 -c 'import json;from pathlib import Path;p=Path.home()/"Library/Application Support/Google/Chrome/Local State";d=json.loads(p.read_text()) if p.exists() else {};last=(d.get("profile") or {}).get("last_used") or "Default";print(last if last=="Default" or str(last).startswith("Profile ") else "Default")' 2>/dev/null || echo Default
-        }
-        CHROME_PROFILE="$(resolve_chrome_profile_dir)"
-        [[ -n "$CHROME_PROFILE" ]] || CHROME_PROFILE="Default"
-
-        if [[ "${GROK_OAUTH_CLEAN:-0}" == "1" ]]; then
-          echo "→ GROK_OAUTH_CLEAN=1: temporary Chrome profile" >&2
-          _exe="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-          if [[ -x "$_exe" ]]; then
-            _profile="$(mktemp -d "${TMPDIR:-/tmp}/grok-oauth-chrome.XXXXXX")"
-            ("$_exe" --user-data-dir="$_profile" --no-first-run --no-default-browser-check \
-              --disable-sync --incognito --new-window "$URL" >/dev/null 2>&1 &)
-            exit 0
-          fi
-        fi
-
+        echo "→ Opening Chrome tab: $URL" >&2
         if [[ ! -d "/Applications/Google Chrome.app" ]]; then
-          open "$URL"; exit 0
+          /usr/bin/open "$URL"; exit $?
         fi
-
-        real_pids="$(real_chrome_main_pids)"
-        if [[ -n "$real_pids" ]]; then
-          if osascript -e "tell application \"Google Chrome\" to open location \"${URL//\"/\\\"}\"" >/dev/null 2>&1; then
-            exit 0
-          fi
-          open -a "Google Chrome" "$URL"
+        ESC="${URL//\"/\\\"}"
+        if osascript -e "tell application \"Google Chrome\" to activate" \
+                     -e "tell application \"Google Chrome\" to open location \"${ESC}\"" \
+                     >/dev/null 2>&1; then
           exit 0
         fi
-        echo "→ Cold-start Chrome --profile-directory=$CHROME_PROFILE" >&2
-        open -na "Google Chrome" --args --profile-directory="$CHROME_PROFILE" "$URL"
+        /usr/bin/open -a "Google Chrome" "$URL"
+        exit $?
+        """#
+
+        // Swallow `open <x.ai url>` from grok's webbrowser crate (PATH `open`).
+        let openShim = #"""
+        #!/bin/zsh
+        for a in "$@"; do
+          case "$a" in
+            https://accounts.x.ai*|http://accounts.x.ai*|https://auth.x.ai*|https://*.x.ai/*oauth*)
+              echo "$(date '+%H:%M:%S') blocked open: $a" >> "${HOME}/Library/Logs/ClaudeCodeProxyTokenMonitorTray/blocked-open.log"
+              exit 0
+              ;;
+          esac
+        done
+        exec /usr/bin/open "$@"
+        """#
+
+        let browserNoop = #"""
+        #!/bin/zsh
+        echo "$(date '+%H:%M:%S') BROWSER noop: $*" >> "${HOME}/Library/Logs/ClaudeCodeProxyTokenMonitorTray/blocked-open.log"
         exit 0
         """#
 
-        // Device-code CLI + normal Chrome.
-        // No local auth.json → first login, open device URL only (no logout).
-        // Has auth.json → optional soft sign-out, then device URL.
-        // Step 2 (CLI) skips sign-out entirely.
+        // Chosen email (1/2/…) → immediately open logout + account in Chrome, wait,
+        // then one device Approve tab. grok CLI browser is swallowed.
         let deviceLoginPy = #"""
         #!/usr/bin/env python3
-        """Device-code OAuth in normal Chrome; skip logout when no local auth."""
+        """Device-code OAuth: logout tab first when switching accounts."""
+        import json
         import os
         import re
         import subprocess
         import sys
+        from pathlib import Path
 
         if len(sys.argv) < 3:
             print(
@@ -957,23 +993,24 @@ final class UsageViewModel: ObservableObject {
 
         helper = sys.argv[1]
         cmd = sys.argv[2:]
-        url_re = re.compile(r"https://[^\s\)\]\"']+")
+        device_url_re = re.compile(
+            r"https://accounts\.x\.ai/oauth2/device[^\s\)\]\"']*",
+            re.I,
+        )
+        any_url_re = re.compile(r"https://[^\s\)\]\"']+")
         expect = (os.environ.get("GROK_EXPECT_EMAIL") or "").strip().lower()
-        # Default: normal Chrome. Opt in to empty profile only with GROK_OAUTH_CLEAN=1.
-        use_clean = os.environ.get("GROK_OAUTH_CLEAN", "0") == "1"
-        # Second step (CLI login) skips xAI logout — already done in step 1 (proxy).
-        skip_signout = os.environ.get("GROK_SKIP_XAI_SIGNOUT", "0") == "1"
-        # Fresh machine / wiped auth: no local session to leave — do not force logout.
-        from pathlib import Path as _Path
-        has_local_auth = (_Path.home() / ".grok" / "auth.json").is_file()
+        shim_dir = os.environ.get("GROK_OPEN_SHIM_DIR") or ""
+        browser_noop = os.environ.get("GROK_BROWSER_NOOP") or "/usr/bin/true"
+        switch = bool(expect)
 
-        def open_url(url: str, *, clean: bool = False) -> None:
-            env = os.environ.copy()
-            if clean:
-                env["GROK_OAUTH_CLEAN"] = "1"
-            else:
-                env.pop("GROK_OAUTH_CLEAN", None)
-            subprocess.run([helper, url], check=False, env=env)
+        def open_url(url: str) -> None:
+            print(f"Opening Chrome: {url}", flush=True)
+            if os.path.isfile(helper):
+                r = subprocess.run([helper, url], check=False)
+                if r.returncode == 0:
+                    return
+                print("helper failed — falling back to open -a Google Chrome", flush=True)
+            subprocess.run(["/usr/bin/open", "-a", "Google Chrome", url], check=False)
 
         def pause(msg: str) -> None:
             print(msg, flush=True)
@@ -987,9 +1024,6 @@ final class UsageViewModel: ObservableObject {
                     pass
 
         def active_email() -> str:
-            import json
-            from pathlib import Path
-
             p = Path.home() / ".grok" / "auth.json"
             if not p.is_file():
                 return ""
@@ -997,23 +1031,52 @@ final class UsageViewModel: ObservableObject {
                 raw = json.loads(p.read_text())
             except Exception:
                 return ""
+            if not isinstance(raw, dict):
+                return ""
             for v in raw.values():
                 if isinstance(v, dict) and v.get("email"):
                     return str(v["email"]).strip().lower()
             return str(raw.get("email") or "").strip().lower()
 
-        # Do not let the CLI open the default browser (we drive Chrome ourselves).
-        env = os.environ.copy()
-        env["BROWSER"] = "true"
-        env["BROWSER_PATH"] = "true"
+        def is_device_url(url: str) -> bool:
+            low = url.lower()
+            return "oauth2/device" in low or "user_code" in low
 
+        current = active_email()
         print(f"$ {' '.join(cmd)}", flush=True)
+        if current:
+            print(f"Current CLI login: {current}", flush=True)
         if expect:
-            print(f"Expected SuperGrok account: {expect}", flush=True)
-        if use_clean:
-            print("GROK_OAUTH_CLEAN=1 → temporary empty Chrome profile\n", flush=True)
+            print(f"Target SuperGrok account: {expect}", flush=True)
+
+        if switch:
+            print("\n========== Switch SuperGrok account ==========", flush=True)
+            print(
+                f"Opening the xAI logout / account page now so you can leave "
+                f"{current or 'the current session'}.",
+                flush=True,
+            )
+            print(f"Then sign in as {expect}. Do not Approve yet.\n", flush=True)
+            open_url("https://accounts.x.ai/logout")
+            open_url("https://accounts.x.ai/account")
+            pause(
+                f"\n>>> Chrome should show accounts.x.ai — sign OUT, then Login with Google as {expect}."
+                "\n>>> When that account is signed in, press Return here…\n"
+            )
+            print("Starting device login (CLI will not open extra tabs)…\n", flush=True)
         else:
-            print("Normal Chrome profile (saved Google accounts stay).\n", flush=True)
+            print(
+                "No target chosen — one device tab in normal Chrome (current session).\n",
+                flush=True,
+            )
+
+        env = os.environ.copy()
+        env["BROWSER"] = browser_noop
+        env["BROWSER_PATH"] = browser_noop
+        env["NO_BROWSER"] = "1"
+        env["GROK_NO_BROWSER"] = "1"
+        if shim_dir:
+            env["PATH"] = shim_dir + os.pathsep + env.get("PATH", "")
 
         proc = subprocess.Popen(
             cmd,
@@ -1030,111 +1093,41 @@ final class UsageViewModel: ObservableObject {
             sys.stdout.flush()
             if opened:
                 continue
-            m = url_re.search(line)
+            m = device_url_re.search(line) or any_url_re.search(line)
             if not m:
                 continue
             url = m.group(0).rstrip(".,);")
+            if not is_device_url(url):
+                continue
 
-            print("\n========== accounts.x.ai SESSION ==========", flush=True)
-            print(
-                "Device auth uses the SuperGrok account already signed into accounts.x.ai,",
-                flush=True,
-            )
-            print(
-                "not whichever Google account is selected on myaccount.google.com.",
-                flush=True,
-            )
-            print("", flush=True)
-
-            target_hint = expect or "the SuperGrok Google account you want"
-
-            if use_clean:
-                print(f"Opening device URL in clean Chrome:\n  {url}\n", flush=True)
-                print(
-                    f"Sign in with Google as {expect or 'the account you want'}, then Approve.",
-                    flush=True,
-                )
-                open_url(url, clean=True)
-            elif skip_signout:
-                print(f"[step 2] Device URL (Approve in Chrome):\n  {url}\n", flush=True)
-                open_url(url, clean=False)
-            elif not has_local_auth:
-                # First login after wipe / no account — do not force logout.
-                print(
-                    "[first login] No ~/.grok/auth.json — skipping accounts.x.ai logout.",
-                    flush=True,
-                )
-                print(f"Opening device URL:\n  {url}\n", flush=True)
-                print(
-                    f"Sign in / Approve as {target_hint}. Waiting for CLI…\n",
-                    flush=True,
-                )
-                open_url(url, clean=False)
-            else:
-                # Have local auth: soft optional sign-out only (not a hard requirement).
-                print(
-                    "[switch] Local auth exists. Opening logout pages only if you need to leave",
-                    flush=True,
-                )
-                print(
-                    "another SuperGrok session — not required if already signed out.",
-                    flush=True,
-                )
-                open_url("https://accounts.x.ai/logout", clean=False)
-                open_url("https://accounts.x.ai/", clean=False)
-                pause(
-                    f"\n>>> Target: {target_hint}"
-                    "\n>>> If Chrome shows the wrong SuperGrok user, sign out there."
-                    "\n>>> If you are already signed out / first time in this browser, ignore logout."
-                    "\n>>> Press Return to open the device login page…\n"
-                )
-                print(f"Opening xAI device URL:\n  {url}\n", flush=True)
-                open_url(url, clean=False)
-                print(
-                    f"Approve as {target_hint}. Waiting for CLI…\n",
-                    flush=True,
-                )
-
+            target_hint = expect or "the SuperGrok account already signed in"
+            print("\n========== Approve in Chrome ==========", flush=True)
+            print("ONE device Approve tab in Chrome.", flush=True)
+            print(f"Opening:\n  {url}\n", flush=True)
+            open_url(url)
+            print(f"Approve as {target_hint}. Waiting for CLI…\n", flush=True)
             opened = True
 
         code = proc.wait()
         if not opened:
-            print("\nNo authorization URL was printed.", flush=True)
+            print("\nNo device authorization URL was printed.", flush=True)
             raise SystemExit(code if code is not None else 1)
 
         if code != 0:
             raise SystemExit(code)
 
-        # Only `grok login` writes ~/.grok/auth.json.
-        is_cli_login = "login" in cmd
-        if is_cli_login:
+        if "login" in cmd:
             got = active_email()
             if expect and got and got != expect:
                 print("", flush=True)
                 print("!!!!!!!!!! WRONG ACCOUNT !!!!!!!!!!", flush=True)
                 print(f"  expected: {expect}", flush=True)
                 print(f"  got:      {got}", flush=True)
-                print("", flush=True)
                 print(
-                    "accounts.x.ai was almost certainly still signed in as the wrong user",
+                    "You Approved the account already signed into that Chrome window.",
                     flush=True,
                 )
-                print(
-                    "when you Approved. Retry: Activate target → Grok login →",
-                    flush=True,
-                )
-                print(
-                    "fully sign out of accounts.x.ai → Login with Google as the target",
-                    flush=True,
-                )
-                print(
-                    "→ confirm email on the device page → Approve.",
-                    flush=True,
-                )
-                print(
-                    "(Optional: GROK_OAUTH_CLEAN=1 for an empty Chrome window.)",
-                    flush=True,
-                )
+                print("Retry: pick the target number, sign in as THAT Google user, Approve.", flush=True)
                 raise SystemExit(42)
             if got:
                 print(f"\n✓ Active CLI login: {got}", flush=True)
@@ -1229,15 +1222,24 @@ final class UsageViewModel: ObservableObject {
         DEVICE_LOGIN="$LOG_DIR/run-device-login-incognito.py"
         SAVE_PROFILE="$LOG_DIR/save-grok-profile-after-login.py"
         clear
-        echo "=== Grok login (normal Chrome) ==="
+        echo "=== Grok login ==="
         echo ""
-        echo "Uses your normal Chrome. Approve as the SuperGrok Google account you want."
-        echo "Target is NOT taken from old active auth.json (that caused padgnoehc confusion)."
+        echo "Type 1 / 2 / email → Chrome opens accounts.x.ai logout/account NOW."
+        echo "Sign out, Login with Google as that target, then Return → one Approve tab."
+        echo "Enter = any → skip logout; one device tab with the current session."
         echo ""
 
         # Optional target: only if you type one. Empty = accept whatever Chrome Approves.
         export GROK_EXPECT_EMAIL=""
+        export GROK_OPEN_SHIM_DIR="$LOG_DIR/path-shim"
+        export GROK_BROWSER_NOOP="$LOG_DIR/browser-noop.sh"
         PROFILES_DIR="$HOME/.grok/profiles"
+        CURRENT_EMAIL=""
+        if [[ -f "$HOME/.grok/auth.json" ]]; then
+          CURRENT_EMAIL="$(python3 -c 'import json;from pathlib import Path;p=Path.home()/".grok"/"auth.json"
+        raw=json.loads(p.read_text());
+        [print(v["email"]) for v in (raw.values() if isinstance(raw,dict) else []) if isinstance(v,dict) and v.get("email")]' 2>/dev/null | head -1)"
+        fi
         typeset -a PROFILE_EMAILS
         PROFILE_EMAILS=()
         if [[ -d "$PROFILES_DIR" ]]; then
@@ -1247,17 +1249,24 @@ final class UsageViewModel: ObservableObject {
             PROFILE_EMAILS+=("$base")
           done
         fi
+        if [[ -n "$CURRENT_EMAIL" ]]; then
+          echo "Current CLI login: $CURRENT_EMAIL"
+        fi
         if (( ${#PROFILE_EMAILS[@]} > 0 )); then
-          echo "Saved profiles (optional check after login):"
+          echo "Saved profiles:"
           i=1
           for e in "${PROFILE_EMAILS[@]}"; do
-            echo "  $i) $e"
+            mark=""
+            if [[ -n "$CURRENT_EMAIL" && "${e:l}" == "${CURRENT_EMAIL:l}" ]]; then
+              mark="  (current)"
+            fi
+            echo "  $i) $e$mark"
             (( i++ ))
           done
           echo "  (or type a full email)"
         fi
-        echo -n "Login as which account? [Enter = any / no check]: "
-        read -r TARGET_RAW
+        echo -n "Login as which account? [Enter = any / keep session]: "
+        read -r TARGET_RAW </dev/tty
         TARGET_RAW="${TARGET_RAW// /}"
         if [[ -n "$TARGET_RAW" ]]; then
           if [[ "$TARGET_RAW" == <-> ]] && (( TARGET_RAW >= 1 && TARGET_RAW <= ${#PROFILE_EMAILS[@]} )); then
@@ -1265,17 +1274,32 @@ final class UsageViewModel: ObservableObject {
           else
             export GROK_EXPECT_EMAIL="$TARGET_RAW"
           fi
-          echo "Will verify after CLI login: $GROK_EXPECT_EMAIL"
+          echo "Target: $GROK_EXPECT_EMAIL  → opening logout/account in Chrome now"
         else
-          echo "No target check — will save whatever account OAuth returns."
+          echo "No target — one device tab, existing Chrome session."
         fi
         echo ""
+
+        close_terminal_window() {
+          # .command profiles often leave the window open after exit — close it.
+          (
+            sleep 0.12
+            osascript >/dev/null 2>&1 <<'APPLESCRIPT' || true
+        tell application "Terminal"
+          try
+            close front window
+          end try
+        end tell
+        APPLESCRIPT
+          ) &
+          exit "${1:-0}"
+        }
 
         if ! command -v grok >/dev/null 2>&1; then
           echo "ERROR: grok CLI not on PATH. Expected: $HOME/.grok/bin/grok"
           echo "Press Return to close…"
-          read -r _
-          exit 1
+          read -r _ </dev/tty 2>/dev/null || read -r _
+          close_terminal_window 1
         fi
 
         HAS_PROXY=0
@@ -1356,16 +1380,20 @@ final class UsageViewModel: ObservableObject {
         fi
         echo ""
         echo "Press Return to close this window…"
-        read -r _
+        read -r _ </dev/tty 2>/dev/null || read -r _
+        close_terminal_window "$code"
         """#
 
         do {
             try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: openShimDir, withIntermediateDirectories: true)
             try browserHelper.write(to: browserHelperURL, atomically: true, encoding: .utf8)
             try deviceLoginPy.write(to: deviceLoginURL, atomically: true, encoding: .utf8)
             try saveProfilePy.write(to: saveProfileURL, atomically: true, encoding: .utf8)
+            try openShim.write(to: openShimURL, atomically: true, encoding: .utf8)
+            try browserNoop.write(to: browserNoopURL, atomically: true, encoding: .utf8)
             try shellBody.write(to: scriptURL, atomically: true, encoding: .utf8)
-            for url in [browserHelperURL, deviceLoginURL, saveProfileURL, scriptURL] {
+            for url in [browserHelperURL, deviceLoginURL, saveProfileURL, scriptURL, openShimURL, browserNoopURL] {
                 try FileManager.default.setAttributes(
                     [.posixPermissions: 0o755],
                     ofItemAtPath: url.path
@@ -1482,32 +1510,50 @@ final class UsageViewModel: ObservableObject {
         return env
     }
 
-    /// Resolve stock `claude-code-proxy` binary (Homebrew / PATH / ~/.local/bin).
+    /// Resolve `claude-code-proxy`. Honor `~/.config/ccs/proxy_flavor` when set;
+    /// otherwise prefer the local grok-4.6 patch over stock Homebrew.
     private func resolveClaudeCodeProxy() -> String? {
-        let candidates = [
+        let patched = "\(NSHomeDirectory())/.grok/bin/claude-code-proxy"
+        let homebrew = [
             "/opt/homebrew/bin/claude-code-proxy",
             "/usr/local/bin/claude-code-proxy",
             "\(NSHomeDirectory())/.local/bin/claude-code-proxy",
-            "\(NSHomeDirectory())/.grok/bin/claude-code-proxy",
         ]
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+        func existing(_ path: String) -> String? {
+            FileManager.default.isExecutableFile(atPath: path) ? path : nil
+        }
+        func firstExisting(_ paths: [String]) -> String? {
+            paths.compactMap(existing).first
+        }
+
+        let flavorURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/ccs/proxy_flavor")
+        let flavor = (try? String(contentsOf: flavorURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if flavor == "patched", let path = existing(patched) {
+            return path
+        }
+        if flavor == "homebrew", let path = firstExisting(homebrew) {
+            return path
+        }
+        if let path = existing(patched) {
+            return path
+        }
+        if let path = firstExisting(homebrew) {
             return path
         }
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         for dir in path.split(separator: ":") {
-            let full = "\(dir)/claude-code-proxy"
-            if FileManager.default.isExecutableFile(atPath: full) {
-                return full
+            if let found = existing("\(dir)/claude-code-proxy") {
+                return found
             }
         }
-        // Also scan augmented PATH dirs
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "\(NSHomeDirectory())/.local/bin"] {
-            let full = "\(dir)/claude-code-proxy"
-            if FileManager.default.isExecutableFile(atPath: full) {
-                return full
-            }
-        }
-        return nil
+        return firstExisting([
+            "/opt/homebrew/bin/claude-code-proxy",
+            "/usr/local/bin/claude-code-proxy",
+            "\(NSHomeDirectory())/.local/bin/claude-code-proxy",
+        ])
     }
 
     /// PIDs listening on TCP port (via `lsof`, standard on macOS).

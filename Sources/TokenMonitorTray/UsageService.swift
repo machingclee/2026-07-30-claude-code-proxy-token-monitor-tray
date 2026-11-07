@@ -166,7 +166,7 @@ enum UsageService {
         throw UsageError.noAuth
     }
 
-    /// Live check: GET billing API with the active CLI token.
+    /// Live check: load weekly credits with the active CLI token.
     /// Success ⇒ tokens work; 401/403 ⇒ need Grok login; other errors are network/API noise.
     enum LiveAuthStatus: Equatable {
         case ok(email: String)
@@ -176,17 +176,25 @@ enum UsageService {
     }
 
     static func probeCLIAuthLive() async -> LiveAuthStatus {
+        await GrokAuthRefresh.ensureFreshCLIAuth()
+        let email = GrokAccountStore.activeEmail()
+        return await probeCLIAuthLiveOnce(email: email)
+    }
+
+    private static func probeCLIAuthLiveOnce(email: String?) async -> LiveAuthStatus {
         let auth: Auth
         do {
             auth = try loadCLIToken()
         } catch {
             return .noAuth
         }
-        let email = GrokAccountStore.activeEmail()
         do {
-            _ = try await getJSON(url: billingCredits, token: auth.token)
+            _ = try await fetchWeeklyPayload(token: auth.token)
             return .ok(email: email ?? "ok")
         } catch let UsageError.http(code, _) where code == 401 || code == 403 {
+            if await GrokAuthRefresh.refreshAfterUnauthorized() {
+                return await probeCLIAuthLiveOnce(email: email)
+            }
             return .authFailed(status: code, email: email)
         } catch let e as UsageError {
             return .networkOrOther(e.errorDescription ?? "\(e)")
@@ -198,10 +206,247 @@ enum UsageService {
     // MARK: - Fetch
 
     static func fetchSnapshot() async throws -> Snapshot {
+        await GrokAuthRefresh.ensureFreshCLIAuth()
+        do {
+            return try await fetchSnapshotOnce()
+        } catch let UsageError.http(code, body) where code == 401 || code == 403 {
+            if await GrokAuthRefresh.refreshAfterUnauthorized() {
+                return try await fetchSnapshotOnce()
+            }
+            throw UsageError.http(code, body)
+        }
+    }
+
+    private static func fetchSnapshotOnce() async throws -> Snapshot {
         let auth = try loadToken()
         // SuperGrok rate limit is the weekly shared pool only — skip monthly billing window.
-        let weekly = try await getJSON(url: billingCredits, token: auth.token)
+        let weekly = try await fetchWeeklyPayload(token: auth.token)
         return parse(weekly: weekly, source: auth.source)
+    }
+
+    /// REST `?format=credits` 500s with "Failed to serialize billing response" for some
+    /// signed-in accounts. The grok.com gRPC credits call still returns the weekly percent.
+    private static let creditsGRPC = URL(string: "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig")!
+
+    private static func fetchWeeklyPayload(token: String) async throws -> [String: Any] {
+        do {
+            return try await getJSON(url: billingCredits, token: token)
+        } catch UsageError.http(let code, let body)
+            where code == 500 && body.localizedCaseInsensitiveContains("Failed to serialize billing response") {
+            return try await creditsConfigFromGRPC(token: token)
+        }
+    }
+
+    private static func creditsConfigFromGRPC(token: String) async throws -> [String: Any] {
+        var request = URLRequest(url: creditsGRPC, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.httpBody = Data([0x00, 0x00, 0x00, 0x00, 0x00])
+        request.setValue("application/grpc-web+proto", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/grpc-web+proto", forHTTPHeaderField: "Accept")
+        request.setValue("1", forHTTPHeaderField: "x-grpc-web")
+        request.setValue("https://grok.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://grok.com/?_s=usage", forHTTPHeaderField: "Referer")
+        request.setValue("xai-grok-cli", forHTTPHeaderField: "x-xai-token-auth")
+        request.setValue("grok-shell", forHTTPHeaderField: "x-grok-client-identifier")
+        request.setValue("1.0.60", forHTTPHeaderField: "x-grok-client-version")
+        request.setValue("cli", forHTTPHeaderField: "x-grok-client-mode")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw UsageError.network(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw UsageError.network("Invalid response")
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw UsageError.http(http.statusCode, "credits grpc")
+        }
+        if !(200...299).contains(http.statusCode) {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw UsageError.http(http.statusCode, String(body.prefix(300)))
+        }
+        if let status = grpcStatus(in: data), status != 0 {
+            throw UsageError.http(status == 16 ? 401 : 502, "grpc-status \(status)")
+        }
+        guard let config = creditsConfig(fromGRPCWeb: data) else {
+            throw UsageError.decode("Grok credits response had no weekly percent")
+        }
+        return ["config": config]
+    }
+
+    /// First gRPC-web data frame → CreditsConfig (field 1) as the REST `config` object.
+    private static func creditsConfig(fromGRPCWeb data: Data) -> [String: Any]? {
+        let bytes = [UInt8](data)
+        guard let payload = firstGRPCDataFrame(bytes) ?? (bytes.isEmpty ? nil : bytes) else {
+            return nil
+        }
+        guard let root = Proto.fields(in: payload) else { return nil }
+        let configBytes = root.first { $0.number == 1 }?.bytes ?? payload
+        guard let fields = Proto.fields(in: configBytes) else { return nil }
+
+        guard let percent = fields.first(where: { $0.number == 1 })?.fixed32, percent.isFinite else {
+            return nil
+        }
+        var config: [String: Any] = ["creditUsagePercent": Double(percent)]
+
+        let start = fields.first { $0.number == 4 }?.bytes.flatMap(timestamp)
+        let end = fields.first { $0.number == 5 }?.bytes.flatMap(timestamp)
+        if let start { config["billingPeriodStart"] = iso8601(start) }
+        if let end { config["billingPeriodEnd"] = iso8601(end) }
+        if start != nil || end != nil {
+            var period: [String: Any] = ["type": "USAGE_PERIOD_TYPE_WEEKLY"]
+            if let start { period["start"] = iso8601(start) }
+            if let end { period["end"] = iso8601(end) }
+            config["currentPeriod"] = period
+        }
+
+        var products: [[String: Any]] = []
+        for field in fields where field.number == 7 {
+            guard let entry = field.bytes, let parsed = Proto.fields(in: entry) else { continue }
+            guard let id = parsed.first(where: { $0.number == 1 })?.varint,
+                  let pct = parsed.first(where: { $0.number == 2 })?.fixed32,
+                  pct.isFinite else { continue }
+            products.append([
+                "product": productName(id),
+                "usagePercent": Double(pct),
+            ])
+        }
+        if !products.isEmpty {
+            config["productUsage"] = products
+        }
+        return config
+    }
+
+    /// billing_product.proto: 1 API, 2 Build, 3 Plugins, 4 Chat, 5 Imagine, 6 Voice.
+    private static func productName(_ id: UInt64) -> String {
+        switch id {
+        case 1: return "Api"
+        case 2: return "GrokBuild"
+        case 3: return "GrokPlugins"
+        case 4: return "GrokChat"
+        case 5: return "GrokImagine"
+        case 6: return "GrokVoice"
+        default: return "Product\(id)"
+        }
+    }
+
+    private static func firstGRPCDataFrame(_ bytes: [UInt8]) -> [UInt8]? {
+        var index = 0
+        while index + 5 <= bytes.count {
+            let flags = bytes[index]
+            let length = (Int(bytes[index + 1]) << 24)
+                | (Int(bytes[index + 2]) << 16)
+                | (Int(bytes[index + 3]) << 8)
+                | Int(bytes[index + 4])
+            let start = index + 5
+            let end = start + length
+            guard length >= 0, end <= bytes.count else { return nil }
+            if flags & 0x80 == 0 {
+                return Array(bytes[start..<end])
+            }
+            index = end
+        }
+        return nil
+    }
+
+    private static func grpcStatus(in data: Data) -> Int? {
+        let bytes = [UInt8](data)
+        var index = 0
+        while index + 5 <= bytes.count {
+            let flags = bytes[index]
+            let length = (Int(bytes[index + 1]) << 24)
+                | (Int(bytes[index + 2]) << 16)
+                | (Int(bytes[index + 3]) << 8)
+                | Int(bytes[index + 4])
+            let start = index + 5
+            let end = start + length
+            guard length >= 0, end <= bytes.count else { return nil }
+            if flags & 0x80 != 0, let text = String(bytes: bytes[start..<end], encoding: .utf8) {
+                for line in text.split(whereSeparator: \.isNewline) {
+                    let parts = line.split(separator: ":", maxSplits: 1)
+                    if parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "grpc-status" {
+                        return Int(parts[1].trimmingCharacters(in: .whitespaces))
+                    }
+                }
+            }
+            index = end
+        }
+        return nil
+    }
+
+    private static func timestamp(_ bytes: [UInt8]) -> Date? {
+        guard let fields = Proto.fields(in: bytes) else { return nil }
+        guard let seconds = fields.first(where: { $0.number == 1 })?.varint else { return nil }
+        let nanos = fields.first(where: { $0.number == 2 })?.varint ?? 0
+        return Date(timeIntervalSince1970: TimeInterval(seconds) + TimeInterval(nanos) / 1_000_000_000)
+    }
+
+    private static func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private struct Proto {
+        struct Field {
+            var number: UInt64
+            var varint: UInt64?
+            var bytes: [UInt8]?
+            var fixed32: Float?
+        }
+
+        static func fields(in bytes: [UInt8]) -> [Field]? {
+            var index = 0
+            var out: [Field] = []
+            while index < bytes.count {
+                guard let key = readVarint(bytes, &index) else { return nil }
+                let number = key >> 3
+                let wire = key & 7
+                switch wire {
+                case 0:
+                    guard let value = readVarint(bytes, &index) else { return nil }
+                    out.append(Field(number: number, varint: value, bytes: nil, fixed32: nil))
+                case 1:
+                    guard index + 8 <= bytes.count else { return nil }
+                    index += 8
+                case 2:
+                    guard let length = readVarint(bytes, &index) else { return nil }
+                    let count = Int(length)
+                    guard index + count <= bytes.count else { return nil }
+                    let slice = Array(bytes[index..<(index + count)])
+                    index += count
+                    out.append(Field(number: number, varint: nil, bytes: slice, fixed32: nil))
+                case 5:
+                    guard index + 4 <= bytes.count else { return nil }
+                    let bits = UInt32(bytes[index])
+                        | (UInt32(bytes[index + 1]) << 8)
+                        | (UInt32(bytes[index + 2]) << 16)
+                        | (UInt32(bytes[index + 3]) << 24)
+                    index += 4
+                    out.append(Field(number: number, varint: nil, bytes: nil, fixed32: Float(bitPattern: bits)))
+                default:
+                    return nil
+                }
+            }
+            return out
+        }
+
+        private static func readVarint(_ bytes: [UInt8], _ index: inout Int) -> UInt64? {
+            var result: UInt64 = 0
+            var shift: UInt64 = 0
+            while index < bytes.count, shift <= 63 {
+                let byte = bytes[index]
+                index += 1
+                result |= UInt64(byte & 0x7f) << shift
+                if byte & 0x80 == 0 { return result }
+                shift += 7
+            }
+            return nil
+        }
     }
 
     private static func getJSON(url: URL, token: String) async throws -> [String: Any] {

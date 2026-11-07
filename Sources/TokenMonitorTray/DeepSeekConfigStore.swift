@@ -46,18 +46,14 @@ enum DeepSeekConfigStore {
             }
         }
 
-        /// Default model id shown in the tray for this variant.
+        /// First-run placeholder only — Activate uses the saved `pro_model` / `flash_model`.
         var defaultModel: String {
             switch self {
             case .pro: return "deepseek-v4-pro[1m]"
-            case .flash: return "deepseek-v4-flash"
+            case .flash: return "deepseek-v4-flash[1m]"
             }
         }
     }
-
-    /// Fixed Claude Code env for **Pro** Activate (exact mapping).
-    private static let proPrimaryModel = "deepseek-v4-pro[1m]"
-    private static let proHaikuSubagentModel = "deepseek-v4-flash"
 
     struct Config: Equatable {
         var apiKey: String
@@ -88,12 +84,15 @@ enum DeepSeekConfigStore {
 
     enum StoreError: LocalizedError {
         case noAPIKey
+        case noModel(Variant)
         case write(String)
 
         var errorDescription: String? {
             switch self {
             case .noAPIKey:
                 return "Enter a DeepSeek API key first."
+            case .noModel(let v):
+                return "Set a \(v.label) model id in DeepSeek config (e.g. deepseek-v4.1-flash[1m])."
             case .write(let msg):
                 return "Could not write config: \(msg)"
             }
@@ -191,26 +190,29 @@ enum DeepSeekConfigStore {
         env.removeValue(forKey: "ANTHROPIC_API_KEY")
         env["DEEPSEEK_API_KEY"] = key
 
+        let pro = normalizeContextTag(config.model(for: .pro))
+        let flash = normalizeContextTag(config.model(for: .flash))
+        guard !pro.isEmpty else { throw StoreError.noModel(.pro) }
+        guard !flash.isEmpty else { throw StoreError.noModel(.flash) }
+
         switch variant {
         case .pro:
-            // Exact Pro mapping (primary + cheaper Haiku/subagent models).
-            env["ANTHROPIC_MODEL"] = proPrimaryModel
-            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = proPrimaryModel
-            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = proPrimaryModel
-            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = proHaikuSubagentModel
-            env["CLAUDE_CODE_SUBAGENT_MODEL"] = proHaikuSubagentModel
+            // Main chat = saved Pro id; Haiku / subagent = saved Flash id.
+            env["ANTHROPIC_MODEL"] = pro
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = pro
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = pro
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = flash
+            env["ANTHROPIC_SMALL_FAST_MODEL"] = flash
+            env["CLAUDE_CODE_SUBAGENT_MODEL"] = flash
             env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-            env.removeValue(forKey: "ANTHROPIC_SMALL_FAST_MODEL")
         case .flash:
-            let flash = normalizeContextTag(config.model(for: .flash))
-            let flashModel = flash.isEmpty ? Variant.flash.defaultModel : flash
-            env["ANTHROPIC_MODEL"] = flashModel
-            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = flashModel
-            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = flashModel
-            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = flashModel
-            env["CLAUDE_CODE_SUBAGENT_MODEL"] = flashModel
+            env["ANTHROPIC_MODEL"] = flash
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = flash
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = flash
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = flash
+            env["ANTHROPIC_SMALL_FAST_MODEL"] = flash
+            env["CLAUDE_CODE_SUBAGENT_MODEL"] = flash
             env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-            env.removeValue(forKey: "ANTHROPIC_SMALL_FAST_MODEL")
         }
 
         root["env"] = env

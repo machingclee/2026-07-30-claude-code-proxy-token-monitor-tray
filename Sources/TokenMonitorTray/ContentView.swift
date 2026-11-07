@@ -429,6 +429,50 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // Claude Code model ids written on Grok Activate (and Save when Grok is active).
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Claude Code models (Grok)")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                Text("Main = chat. Fast = Haiku / subagent. Applied on Activate or Save.")
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Main")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                        TextField(GrokModelsConfigStore.defaultMainModel, text: $model.grokMainModelDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body.monospacedDigit())
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Fast / subagent")
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                        TextField(GrokModelsConfigStore.defaultFastModel, text: $model.grokFastModelDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body.monospacedDigit())
+                    }
+                }
+                Button {
+                    model.saveGrokModelsConfigFromDrafts()
+                } label: {
+                    Text("Save Grok models")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                if let msg = model.grokModelsMessage {
+                    Text(msg)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             // Grok login only when usage cannot be fetched (no/expired auth).
             if model.shouldShowGrokLogin {
                 Button {
@@ -467,7 +511,7 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
                     .disabled(model.isLaunchingProxy || model.isSwitching)
-                    .help("Syncs active Grok login into proxy auth, then: claude-code-proxy serve --no-monitor")
+                    .help("Syncs active Grok login into proxy auth, then starts the preferred binary (~/.grok/bin if ccs flavor is patched / grok-4.6).")
                 }
             }
 
@@ -594,22 +638,27 @@ struct ContentView: View {
                         .font(.body)
                 }
 
+                Text("Model ids are stored in this app’s config — edit when DeepSeek ships a new name (e.g. deepseek-v4.1-flash[1m]).")
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Pro model")
                             .font(.body)
                             .foregroundStyle(.secondary)
-                        TextField("deepseek-v4-pro[1m]", text: $model.deepseekProModelDraft)
+                        TextField("e.g. deepseek-v4.1-pro[1m]", text: $model.deepseekProModelDraft)
                             .textFieldStyle(.roundedBorder)
-                            .font(.body)
+                            .font(.body.monospacedDigit())
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Flash model")
+                        Text("Flash / subagent")
                             .font(.body)
                             .foregroundStyle(.secondary)
-                        TextField("deepseek-v4-flash", text: $model.deepseekFlashModelDraft)
+                        TextField("e.g. deepseek-v4.1-flash[1m]", text: $model.deepseekFlashModelDraft)
                             .textFieldStyle(.roundedBorder)
-                            .font(.body)
+                            .font(.body.monospacedDigit())
                     }
                 }
 
