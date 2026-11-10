@@ -1,25 +1,17 @@
 import SwiftUI
-import AppKit
 
 @main
 struct TokenMonitorTrayApp: App {
-    @StateObject private var model = UsageViewModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        // Menu bar only — no Dock icon (also LSUIElement in Info.plist).
-        NSApplication.shared.setActivationPolicy(.accessory)
+        StartupLog.mark("TokenMonitorTrayApp.init")
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            ContentView(model: model)
-        } label: {
-            // Composite label image: icon + weekly/monthly (or single metric).
-            // Drawing text in SwiftUI VStack is unreliable inside MenuBarExtra.
-            Image(nsImage: model.menuBarCompositeImage)
-                .renderingMode(.template)
-                .interpolation(.high)
+        // SwiftUI host only; UI is AppKit status item + popover (see AppDelegate).
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
     }
 }

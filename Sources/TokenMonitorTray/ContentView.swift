@@ -15,51 +15,47 @@ struct ContentView: View {
     @State private var expandedIds: Set<String> = []
     /// Nested DeepSeek config (API key / URL / models) — collapsed by default.
     @State private var deepseekConfigExpanded = false
-    /// Measured body height; panel window hugs this (capped by `maxPanelHeight`).
+    /// Measured body height; the window hugs this with no scrolling.
     @State private var contentHeight: CGFloat = 0
 
-    private let panelWidth: CGFloat = 420
+    private let panelWidth: CGFloat = TrayPanelMetrics.width
     private let minPanelHeight: CGFloat = 160
 
-    /// Cap so a fully expanded panel still fits under the menu bar and can scroll.
-    private var maxPanelHeight: CGFloat {
-        let visible = NSScreen.main?.visibleFrame.height ?? 900
-        return min(720, floor(visible * 0.78))
-    }
-
     private var panelHeight: CGFloat {
-        let measured = contentHeight > 0 ? contentHeight : minPanelHeight
-        return min(max(measured, minPanelHeight), maxPanelHeight)
-    }
-
-    private var contentExceedsMax: Bool {
-        contentHeight > maxPanelHeight + 0.5
+        contentHeight > 0 ? contentHeight : minPanelHeight
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: contentExceedsMax) {
-            panelBody
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(
-                            key: PanelContentHeightKey.self,
-                            value: geo.size.height
-                        )
-                    }
-                )
+        panelBody
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: PanelContentHeightKey.self,
+                        value: geo.size.height
+                    )
+                }
+            )
+            .onPreferenceChange(PanelContentHeightKey.self) { h in
+                guard h > 0 else { return }
+                if abs(h - contentHeight) > 0.5 {
+                    contentHeight = h
+                }
+                model.setPanelContentHeight(max(h, minPanelHeight))
+            }
+            .frame(width: panelWidth, height: panelHeight, alignment: .top)
+        .onAppear {
+            model.setPanelOpen(true)
+            collapseAllSections()
         }
-        .onPreferenceChange(PanelContentHeightKey.self) { h in
-            guard h > 0, abs(h - contentHeight) > 0.5 else { return }
-            contentHeight = h
-        }
-        .frame(width: panelWidth, height: panelHeight, alignment: .top)
-        .menuBarPanelFade(fadeIn: 0.18, fadeOut: 0.22)
-        .onAppear { model.setPanelOpen(true) }
         .onDisappear { model.setPanelOpen(false) }
+        .onChange(of: model.isPanelOpen) { open in
+            // The hosting view stays alive across opens, so reset every time the menu is shown.
+            if open { collapseAllSections() }
+        }
     }
 
     private var panelBody: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 8) {
             header
             Divider()
 
@@ -132,7 +128,7 @@ struct ContentView: View {
             Divider()
             footer
         }
-        .padding(16)
+        .padding(12)
         .frame(width: panelWidth, alignment: .topLeading)
     }
 
@@ -261,8 +257,8 @@ struct ContentView: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .padding(.vertical, 4)
-                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .padding(.horizontal, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(
@@ -359,6 +355,26 @@ struct ContentView: View {
         }
     }
 
+    /// Plain button with an explicit label. `borderedProminent` collapsed to zero width in this panel,
+    /// and a tap gesture on the label never received the click.
+    private func activateChip(disabled: Bool, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text("Activate")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(disabled ? Color.secondary.opacity(0.45) : Color.accentColor)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .fixedSize(horizontal: true, vertical: true)
+        .help(help)
+    }
+
     /// Grok accounts (Activate per row like DeepSeek), optional Save, then proxy.
     private var grokAccountsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -373,11 +389,13 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 ForEach(model.grokProfiles) { p in
-                    HStack(spacing: 6) {
+                    HStack(alignment: .center, spacing: 8) {
                         // e.g. "padgnoehc / Resets in 4d 23h 12m" — from cached weekly_end, live if active.
                         Text(model.grokAccountRowLabel(p.email))
                             .font(.body.monospacedDigit())
                             .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .help(p.email)
                         if model.isGrokAccountFullyActive(p) {
                             Text("active")
@@ -387,24 +405,21 @@ struct ContentView: View {
                                 .background(Color.accentColor.opacity(0.15))
                                 .foregroundStyle(Color.accentColor)
                                 .clipShape(Capsule())
-                        }
-                        Spacer(minLength: 4)
-                        if model.isGrokAccountFullyActive(p) {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.title2)
                                 .foregroundStyle(Color.accentColor)
                                 .symbolRenderingMode(.hierarchical)
-                        } else if p.id != "__active__" || p.isActive {
-                            // Saved profiles, or current login when Claude is not on Grok yet.
-                            Button("Activate") {
+                                .fixedSize()
+                        } else {
+                            activateChip(
+                                disabled: model.isSwitchingGrokAccount || model.isSwitching,
+                                help: "Switch to this profile, then GET usage/billing API to verify tokens. Re-login only if that fails. Restarts proxy when auth is OK and it was running."
+                            ) {
                                 model.activateGrokAccount(profileId: p.id)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.regular)
-                            .disabled(model.isSwitchingGrokAccount || model.isSwitching)
-                            .help("Switch to this profile, then GET usage/billing API to verify tokens. Re-login only if that fails. Restarts proxy when auth is OK and it was running.")
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
@@ -517,6 +532,11 @@ struct ContentView: View {
 
             Divider().padding(.vertical, 4)
         }
+    }
+
+    private func collapseAllSections() {
+        expandedIds = []
+        deepseekConfigExpanded = false
     }
 
     private func toggle(_ id: String) {
@@ -679,7 +699,7 @@ struct ContentView: View {
                 .padding(.top, deepseekConfigExpanded ? 4 : 0)
 
             ForEach(DeepSeekConfigStore.Variant.allCases) { variant in
-                HStack(spacing: 6) {
+                HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 6) {
                             Text(variant.label)
@@ -698,23 +718,25 @@ struct ContentView: View {
                             .font(.body)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
+                            .truncationMode(.tail)
                     }
-                    Spacer(minLength: 4)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     if model.isDeepSeekVariantActive(variant) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.title2)
                             .foregroundStyle(Color.accentColor)
                             .symbolRenderingMode(.hierarchical)
+                            .fixedSize()
                     } else {
-                        Button("Activate") {
+                        activateChip(
+                            disabled: model.isActivatingDeepSeek || model.isSwitching,
+                            help: "Write DeepSeek \(variant.label) into ~/.claude/settings.json (no CC Switch)"
+                        ) {
                             model.activateDeepSeek(variant: variant)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
-                        .disabled(model.isActivatingDeepSeek || model.isSwitching)
-                        .help("Write DeepSeek \(variant.label) into ~/.claude/settings.json (no CC Switch)")
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if let msg = model.deepseekConfigMessage {

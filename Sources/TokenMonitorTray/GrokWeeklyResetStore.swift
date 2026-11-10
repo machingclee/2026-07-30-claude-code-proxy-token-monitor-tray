@@ -1,7 +1,10 @@
 import Foundation
 
 /// Per-account SuperGrok **weekly reset** timestamps so the tray can show
-/// `machingclee / 2.33d` without a live API call.
+/// `machingclee / Resets in 6d 2h` without a live API call.
+///
+/// `weekly_end` is `currentPeriod.end` from the billing API. That is the only
+/// reset timestamp Grok returns. Do not invent a countdown from "now".
 ///
 /// Storage: JSON under Application Support (not milliseconds — see below).
 ///
@@ -16,8 +19,10 @@ import Foundation
 /// `~/Library/Application Support/Claude-Code-Proxy Token Monitor Tray/grok-weekly-resets.json`
 enum GrokWeeklyResetStore {
     struct Record: Equatable {
-        /// End of the SuperGrok weekly window (when usage resets).
+        /// `currentPeriod.end` from the billing API.
         var weeklyEnd: Date
+        /// Same value as `weeklyEnd`. Kept so older cache files still load.
+        var apiWeeklyEnd: Date?
         /// Last known weekly used % (optional; updated on fetch).
         var weeklyPercent: Double?
         /// When we last wrote this record (local clock).
@@ -80,8 +85,10 @@ enum GrokWeeklyResetStore {
                 return nil
             }()
             let updated = (d["updated_at"] as? String).flatMap(parseISO) ?? Date()
+            let apiEnd = (d["api_weekly_end"] as? String).flatMap(parseISO)
             out[normalizeEmail(email)] = Record(
                 weeklyEnd: weeklyEnd,
+                apiWeeklyEnd: apiEnd,
                 weeklyPercent: pct,
                 updatedAt: updated
             )
@@ -95,16 +102,20 @@ enum GrokWeeklyResetStore {
     }
 
     /// Update cache after a successful usage fetch for `email`.
-    static func update(email: String?, weeklyEnd: Date?, weeklyPercent: Double?) {
-        guard let email, !email.isEmpty, let weeklyEnd else { return }
+    /// Returns the reset time the tray should display.
+    @discardableResult
+    static func update(email: String?, weeklyEnd apiEnd: Date?, weeklyPercent: Double?) -> Date? {
+        guard let email, !email.isEmpty, let apiEnd else { return nil }
         var all = loadAll()
         let key = normalizeEmail(email)
         all[key] = Record(
-            weeklyEnd: weeklyEnd,
+            weeklyEnd: apiEnd,
+            apiWeeklyEnd: apiEnd,
             weeklyPercent: weeklyPercent,
             updatedAt: Date()
         )
         saveAll(all)
+        return apiEnd
     }
 
     /// Compact fractional days (`1.23d`) from a stored weeklyEnd — for menu bar.
@@ -143,6 +154,9 @@ enum GrokWeeklyResetStore {
                 "weekly_end": formatISO(rec.weeklyEnd),
                 "updated_at": formatISO(rec.updatedAt),
             ]
+            if let apiEnd = rec.apiWeeklyEnd {
+                entry["api_weekly_end"] = formatISO(apiEnd)
+            }
             if let p = rec.weeklyPercent {
                 entry["weekly_percent"] = p
             }

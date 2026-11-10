@@ -137,7 +137,7 @@ Recipient: unzip → move to Applications → open (if blocked: right-click Open
 
 | Item | Notes |
 | --- | --- |
-| macOS 13+ | MenuBarExtra |
+| macOS 13+ | AppKit `NSStatusItem` + `NSPopover` (not SwiftUI `MenuBarExtra`) |
 | Swift 5.9+ / Xcode CLT | Build |
 | Grok usage / multi-account | `grok` CLI after install |
 | DeepSeek balance / Activate | Tray-local API key (or env) |
@@ -385,7 +385,11 @@ The tray does not require `ccs` for proxy launch/stop or DeepSeek Activate.
 
 | Problem | Fix |
 | --- | --- |
-| No icon in menu bar | `pgrep -x TokenMonitorTray`; check menu bar overflow `»` |
+| Icon vanished, no crash | Usually **not** a crash: `pgrep -x TokenMonitorTray` still shows a PID. No `TokenMonitorTray` entry in `~/Library/Logs/DiagnosticReports/`. See `~/Library/Logs/ClaudeCodeProxyTokenMonitorTray/launch.log` for `applicationShouldTerminate` / `UNCAUGHT`. Try `token-monitor-tray --panel` or toggle allow-list. |
+| No `pgrep -x TokenMonitorTray` | App never stayed running — relaunch with `open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"` then `tail -20 ~/Library/Logs/ClaudeCodeProxyTokenMonitorTray/launch.log` (should show `menu bar controller installed`). Duplicate login-item + manual launch exits the second copy instantly. |
+| Icon missing but `pgrep` OK | Use the app anyway: `token-monitor-tray --panel` (or `kill -USR1 $(pgrep -x TokenMonitorTray)`) opens the usage panel without the menu bar icon. Then fix Tahoe allow-list (below). |
+| No icon (stuck forever on Tahoe) | v1.0.4+ uses bundle ID `com.chingcheonglee.token-monitor-tray` (rebuild with `./Scripts/build-app.sh`) so Control Center treats it as a fresh app — enable it in **Menu Bar → Allow in the Menu Bar**. Old ID `com.local.claude-code-proxy-token-monitor-tray` prefs migrate automatically. |
+| No icon in menu bar | **macOS 26 (Tahoe):** System Settings → Menu Bar → **Allow in the Menu Bar** — toggle *Claude-Code-Proxy Token Monitor Tray* off/on; if still missing, scroll down → **Reset Control Center…** then reopen the app. Check `defaults read com.local.claude-code-proxy-token-monitor-tray` — if `NSStatusItem VisibleCC Item-0 = 0`, the app is running but Control Center is hiding the icon; rebuild/reopen (clears on launch) or run `./Scripts/fix-tahoe-menu-bar.sh`. Also check `pgrep -x TokenMonitorTray` and menu bar overflow `»`. |
 | Grok shows `!` or empty | **Grok login**, then open panel / Refresh |
 | Wrong Grok usage after switch | **Activate** that email (forces usage refetch); ensure proxy restarted if you use it |
 | Activate says auth failed (401/403) | **Grok login** for that SuperGrok Google account, then Activate again |
@@ -404,7 +408,9 @@ The tray does not require `ccs` for proxy launch/stop or DeepSeek Activate.
 ```text
 Package.swift                     Product: TokenMonitorTray
 Sources/TokenMonitorTray/
-  TokenMonitorTrayApp.swift       @main menu bar entry
+  TokenMonitorTrayApp.swift       @main app entry
+  AppDelegate.swift               status item + popover wiring
+  MenuBarController.swift         owns `NSStatusItem` and panel popover
   ContentView.swift               Panel UI (accordion Grok / DeepSeek)
   UsageViewModel.swift            Poll, Activate, login script, proxy, DeepSeek drafts
   UsageService.swift              Grok billing APIs + live auth probe

@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Claude-Code-Proxy Token Monitor Tray"
 PRODUCT="TokenMonitorTray"
-BUNDLE_ID="com.local.claude-code-proxy-token-monitor-tray"
+# Bumped for macOS 26: old ID can stay force-hidden in Control Center (per-bundle poisoned state).
+BUNDLE_ID="com.chingcheonglee.token-monitor-tray"
 BUILD_DIR="${ROOT}/.build"
 APP_DIR="${1:-$HOME/Applications}/${APP_NAME}.app"
 CONTENTS="${APP_DIR}/Contents"
@@ -106,9 +107,9 @@ cat > "${CONTENTS}/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.3</string>
+  <string>1.0.4</string>
   <key>CFBundleVersion</key>
-  <string>4</string>
+  <string>5</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>LSUIElement</key>
@@ -164,7 +165,17 @@ if [[ ! -d "$APP" ]]; then
   echo "Build with: ./Scripts/build-app.sh (from the project root)" >&2
   exit 1
 fi
+if [[ "${1:-}" == "--panel" ]]; then
+  if pid=$(pgrep -x TokenMonitorTray); then
+    kill -USR1 "$pid"
+    exit 0
+  fi
+fi
 if open "$APP" 2>/dev/null; then
+  if [[ "${1:-}" == "--panel" ]]; then
+    sleep 1
+    pid=$(pgrep -x TokenMonitorTray) && kill -USR1 "$pid"
+  fi
   exit 0
 fi
 exec "$APP/Contents/MacOS/TokenMonitorTray"

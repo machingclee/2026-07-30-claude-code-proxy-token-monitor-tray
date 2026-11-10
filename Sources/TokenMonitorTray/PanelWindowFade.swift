@@ -6,22 +6,27 @@ import AppKit
 struct PanelWindowFade: NSViewRepresentable {
     var fadeInDuration: TimeInterval = 0.18
     var fadeOutDuration: TimeInterval = 0.22
+    /// When false, dismissal fade is handled by `DropdownPanelController` (avoids abrupt `orderOut`).
+    var fadeOutOnResignKey: Bool = true
 
     func makeNSView(context: Context) -> AnchorView {
         let view = AnchorView()
         view.fadeInDuration = fadeInDuration
         view.fadeOutDuration = fadeOutDuration
+        view.fadeOutOnResignKey = fadeOutOnResignKey
         return view
     }
 
     func updateNSView(_ nsView: AnchorView, context: Context) {
         nsView.fadeInDuration = fadeInDuration
         nsView.fadeOutDuration = fadeOutDuration
+        nsView.fadeOutOnResignKey = fadeOutOnResignKey
     }
 
     final class AnchorView: NSView {
         var fadeInDuration: TimeInterval = 0.18
         var fadeOutDuration: TimeInterval = 0.22
+        var fadeOutOnResignKey: Bool = true
 
         private var resignObserver: NSObjectProtocol?
         private var becomeObserver: NSObjectProtocol?
@@ -56,23 +61,30 @@ struct PanelWindowFade: NSViewRepresentable {
                 object: window,
                 queue: .main
             ) { [weak self] _ in
-                self?.fadeOut(window)
+                guard let self, self.fadeOutOnResignKey else { return }
+                self.fadeOut(window)
             }
             becomeObserver = center.addObserver(
                 forName: NSWindow.didBecomeKeyNotification,
                 object: window,
                 queue: .main
             ) { [weak self] _ in
-                self?.lockedTopY = window.frame.maxY
-                self?.fadeIn(window)
+                guard let self else { return }
+                // The dropdown panel pins its own frame. Re-locking here captures a drifted origin.
+                if self.fadeOutOnResignKey {
+                    self.lockedTopY = window.frame.maxY
+                }
+                self.fadeIn(window)
             }
-            // If the system still resizes/repositions, re-pin the top under the menu bar.
-            frameObserver = center.addObserver(
-                forName: NSWindow.didResizeNotification,
-                object: window,
-                queue: .main
-            ) { [weak self] _ in
-                self?.reanchorTop(window)
+            // MenuBarExtra only. The dropdown panel resizes on expand/collapse and pins itself.
+            if fadeOutOnResignKey {
+                frameObserver = center.addObserver(
+                    forName: NSWindow.didResizeNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.reanchorTop(window)
+                }
             }
         }
 
@@ -144,11 +156,16 @@ extension View {
     /// Fade the MenuBarExtra panel window when it appears / resigns key.
     func menuBarPanelFade(
         fadeIn: TimeInterval = 0.18,
-        fadeOut: TimeInterval = 0.22
+        fadeOut: TimeInterval = 0.22,
+        fadeOutOnResignKey: Bool = true
     ) -> some View {
         background(
-            PanelWindowFade(fadeInDuration: fadeIn, fadeOutDuration: fadeOut)
-                .frame(width: 0, height: 0)
+            PanelWindowFade(
+                fadeInDuration: fadeIn,
+                fadeOutDuration: fadeOut,
+                fadeOutOnResignKey: fadeOutOnResignKey
+            )
+            .frame(width: 0, height: 0)
         )
     }
 }

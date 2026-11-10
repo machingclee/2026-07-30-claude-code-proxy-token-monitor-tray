@@ -50,6 +50,21 @@ final class UsageViewModel: ObservableObject {
 
     /// True while the menu bar panel is open (drives faster 5s polling).
     @Published var isPanelOpen = false
+    /// Measured dropdown body height. The panel window hugs this and stays under the menu bar.
+    @Published var panelContentHeight: CGFloat = 0
+
+    func setPanelContentHeight(_ height: CGFloat) {
+        guard height > 40, abs(height - panelContentHeight) > 0.5 else { return }
+        panelContentHeight = height
+    }
+
+    /// Cached status-item raster; do not rebuild in `MenuBarExtra` label `body` every frame.
+    @Published private(set) var menuBarStatusImage: NSImage = GrokIcon.menuBar
+    /// Bumped to reassert AppKit button image after wake / panel toggle.
+    @Published private(set) var menuBarRevision = 0
+
+    private var menuBarLabelCacheKey = ""
+    private var workspaceWakeObserver: NSObjectProtocol?
 
     private var pollTask: Task<Void, Never>?
     private var backgroundPollTask: Task<Void, Never>?
@@ -87,6 +102,27 @@ final class UsageViewModel: ObservableObject {
         reloadGrokModelsConfig()
         Task { await refresh() }
         startBackgroundPolling()
+        refreshMenuBarStatusImage()
+        workspaceWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.reassertMenuBarLabel()
+            }
+        }
+    }
+
+    deinit {
+        if let workspaceWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceWakeObserver)
+        }
+    }
+
+    /// Re-paint and re-bind the menu bar icon (after sleep or when SwiftUI clears the button image).
+    func reassertMenuBarLabel() {
+        refreshMenuBarStatusImage(force: true)
     }
 
     func reloadGrokModelsConfig() {
@@ -707,8 +743,16 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// Brand icon + single-line metrics for the status item.
-    var menuBarCompositeImage: NSImage {
+    /// Rebuild the cached menu bar image when metrics or active provider change.
+    func refreshMenuBarStatusImage(force: Bool = false) {
+        let key = "\(activeKind)|\(menuBarTitle)"
+        if !force, key == menuBarLabelCacheKey { return }
+        menuBarLabelCacheKey = key
+        menuBarStatusImage = makeMenuBarCompositeImage()
+        menuBarRevision &+= 1
+    }
+
+    private func makeMenuBarCompositeImage() -> NSImage {
         let icon = menuBarIcon
         let metrics = MenuBarLabelImage.single(menuBarTitle)
         let gap: CGFloat = 3
@@ -1610,14 +1654,18 @@ final class UsageViewModel: ObservableObject {
 
         switch g {
         case .success(let snap):
-            grok = snap
-            grokError = nil
-            // Persist weekly reset so other accounts can show `machingclee / 2.33d` offline.
-            GrokWeeklyResetStore.update(
-                email: GrokAccountStore.activeEmail(),
+            let email = GrokAccountStore.activeEmail()
+            let shownEnd = GrokWeeklyResetStore.update(
+                email: email,
                 weeklyEnd: snap.weeklyEnd,
                 weeklyPercent: snap.weeklyPercent
             )
+            var shown = snap
+            if let shownEnd {
+                shown.weeklyEnd = shownEnd
+            }
+            grok = shown
+            grokError = nil
         case .failure(let err):
             // Clear stale limits from the previous account on hard auth failure.
             if let ue = err as? UsageService.UsageError, case .http(let code, _) = ue, code == 401 || code == 403 {
@@ -1637,6 +1685,7 @@ final class UsageViewModel: ObservableObject {
         if grok != nil || deepseek != nil {
             lastRefresh = Date()
         }
+        refreshMenuBarStatusImage()
     }
 
     private func fetchGrok() async -> Result<UsageService.Snapshot, Error> {
