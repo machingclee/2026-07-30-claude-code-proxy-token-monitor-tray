@@ -9,8 +9,7 @@ macOS **menu bar** app for SuperGrok usage, multi-account Grok login, DeepSeek b
 | **Product name** | Claude-Code-Proxy Token Monitor Tray (`.app` display name) |
 | **Executable / module** | `TokenMonitorTray` (Swift package + `Contents/MacOS/TokenMonitorTray`) |
 | **CLI launcher** | `token-monitor-tray` (`gm-tray` kept as a thin compat alias) |
-| Menu bar (Grok active) | Grok mark + `65% / 5.33d` — weekly used % · days until weekly reset |
-| Menu bar (DeepSeek active) | Whale mark + prepaid balance (e.g. `$28`) |
+| Menu bar | Two columns at once. First: active Grok account + weekly `65% / 5.33d`. Next: DeepSeek balance (e.g. `$28`) |
 | Panel | **Accordion**: expand Grok **or** DeepSeek (not both) |
 | Poll | Every **20s** in background; every **5s** while the panel is open |
 | Dock | **None** (`LSUIElement`) |
@@ -153,7 +152,7 @@ Recipient: unzip → move to Applications → open (if blocked: right-click Open
 - Fade in/out menu bar panel
 - **Exclusive expand**: opening Grok collapses DeepSeek and vice versa
 - **Single active method**: activating Grok inactivates DeepSeek Pro/Flash (and reverse); Pro ↔ Flash are exclusive
-- Menu bar icon follows **live** `~/.claude/settings.json` (DeepSeek vs Grok proxy), not only CC Switch
+- Menu bar always shows **both** columns: active Grok account (first) and DeepSeek balance (next). The panel still follows the live Claude method in `~/.claude/settings.json`
 
 ### Grok
 
@@ -209,10 +208,12 @@ open "$HOME/Applications/Claude-Code-Proxy Token Monitor Tray.app"
 
 ### Menu bar label
 
-| Live Claude method (`~/.claude/settings.json`) | Tray shows |
+Both columns stay visible together, each on one line at menu-bar size:
+
+| Column | Shows |
 | --- | --- |
-| Grok (e.g. base `http://127.0.0.1:18765`) | Grok mark + weekly `%` only |
-| DeepSeek (base/model contains deepseek) | DeepSeek mark + balance |
+| First | Grok mark + active account (`machingclee`) + weekly `% / days` (`65% / 5.33d`) |
+| Next | DeepSeek mark + prepaid balance (e.g. `$28`) |
 
 ---
 
@@ -296,7 +297,7 @@ SuperGrok’s rate limit is a **shared weekly pool**. The tray monitors that onl
 
 | UI | Meaning |
 | --- | --- |
-| Menu bar `65% / 5.33d` | Weekly pool used · fractional days until **weekly** reset |
+| Menu bar first column `machingclee  65% / 5.33d` | Active Grok account · weekly pool used · fractional days until **weekly** reset |
 | **SuperGrok weekly limit** | Bar + % used/left + `1.23d` + wall-clock weekly reset |
 
 There is **no** subscription/card “renew date” editor in the tray, and **no** monthly usage quota — only the weekly pool.

@@ -361,6 +361,7 @@ final class UsageViewModel: ObservableObject {
     func reloadGrokProfiles() {
         grokProfiles = GrokAccountStore.listProfiles()
         activeGrokEmail = GrokAccountStore.activeEmail()
+        refreshMenuBarStatusImage()
     }
 
     /// True when the active CLI login is not yet stored under `~/.grok/profiles/`
@@ -678,19 +679,6 @@ final class UsageViewModel: ObservableObject {
         return out
     }
 
-    /// Tray icon matches the activated Claude provider.
-    var menuBarIcon: NSImage {
-        switch activeKind {
-        case .deepseek:
-            return DeepSeekIcon.menuBar
-        case .grok:
-            return GrokIcon.menuBar
-        case .other:
-            // Prefer Grok mark as generic fallback; still show usage for active context.
-            return GrokIcon.menuBar
-        }
-    }
-
     /// SuperGrok weekly usage for menu bar: live `65% / 5.33d`, or cached days if offline.
     var grokWeeklyLabel: String {
         if let grok { return grok.menuBarTitle }
@@ -728,19 +716,33 @@ final class UsageViewModel: ObservableObject {
         return isLoading ? "…" : "—"
     }
 
-    /// Single-line tray label next to the icon.
-    /// Grok: `88%/1.23d` = weekly used % / days until weekly reset. DeepSeek: balance (e.g. `$28`).
-    var menuBarTitle: String {
-        switch activeKind {
-        case .deepseek:
-            return deepseekMenuLabel
-        case .grok:
-            return grokWeeklyLabel
-        case .other:
-            if grok != nil { return grokWeeklyLabel }
-            if deepseek != nil { return deepseekMenuLabel }
-            return isLoading ? "…" : "—"
+    /// First menu-bar column: active Grok account and its weekly usage.
+    var grokMenuBarRow: String {
+        let usage = grokWeeklyLabel
+        guard let email = activeGrokEmail ?? GrokAccountStore.activeEmail() else {
+            return usage
         }
+        let name = compactGrokAccountName(email)
+        guard !name.isEmpty else { return usage }
+        return "\(name)  \(usage)"
+    }
+
+    /// Second menu-bar column: DeepSeek prepaid balance.
+    var deepseekMenuBarRow: String {
+        deepseekMenuLabel
+    }
+
+    /// Both columns, for the tooltip and launch log.
+    var menuBarTitle: String {
+        "Grok \(grokMenuBarRow) · DeepSeek \(deepseekMenuBarRow)"
+    }
+
+    private func compactGrokAccountName(_ email: String) -> String {
+        let name = GrokWeeklyResetStore.shortName(email)
+        let maxLen = 16
+        guard name.count > maxLen else { return name }
+        let end = name.index(name.startIndex, offsetBy: maxLen - 1)
+        return String(name[..<end]) + "…"
     }
 
     /// Rebuild the cached menu bar image when metrics or active provider change.
@@ -753,49 +755,12 @@ final class UsageViewModel: ObservableObject {
     }
 
     private func makeMenuBarCompositeImage() -> NSImage {
-        let icon = menuBarIcon
-        let metrics = MenuBarLabelImage.single(menuBarTitle)
-        let gap: CGFloat = 3
-        // Match metrics height better — earlier 14pt looked tiny next to 12pt text.
-        let iconSide: CGFloat = 20
-        let w = iconSide + gap + max(metrics.size.width, 12)
-        let h = max(iconSide, metrics.size.height, 20)
-        let size = NSSize(width: w, height: h)
-
-        let out = NSImage(size: size, flipped: true) { _ in
-            let iconRect = NSRect(
-                x: 0,
-                y: (h - iconSide) / 2,
-                width: iconSide,
-                height: iconSide
-            )
-            icon.draw(
-                in: iconRect,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: 1,
-                respectFlipped: true,
-                hints: [.interpolation: NSImageInterpolation.high]
-            )
-            let metricsRect = NSRect(
-                x: iconSide + gap,
-                y: (h - metrics.size.height) / 2,
-                width: metrics.size.width,
-                height: metrics.size.height
-            )
-            metrics.draw(
-                in: metricsRect,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: 1,
-                respectFlipped: true,
-                hints: [.interpolation: NSImageInterpolation.high]
-            )
-            return true
-        }
-        out.isTemplate = true
-        out.accessibilityDescription = menuBarTitle
-        return out
+        MenuBarLabelImage.columns(
+            leadingIcon: GrokIcon.menuBar,
+            leadingText: grokMenuBarRow,
+            trailingIcon: DeepSeekIcon.menuBar,
+            trailingText: deepseekMenuBarRow
+        )
     }
 
     func setPanelOpen(_ open: Bool) {

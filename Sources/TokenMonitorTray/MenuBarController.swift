@@ -113,12 +113,15 @@ final class MenuBarController: NSObject {
     private func applyStatusItemLabel() {
         statusItem.length = NSStatusItem.variableLength
         guard let button = statusItem.button else { return }
-        button.image = model.menuBarIcon
-        button.imagePosition = .imageLeading
-        button.title = model.menuBarTitle
-        button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        let image = model.menuBarStatusImage
+        image.isTemplate = true
+        button.image = image
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.title = ""
         button.appearsDisabled = false
-        button.toolTip = "Claude-Code-Proxy Token Monitor — \(model.menuBarTitle)"
+        button.toolTip = model.menuBarTitle
+        button.setAccessibilityLabel(model.menuBarTitle)
         statusItem.isVisible = true
     }
 
@@ -162,7 +165,7 @@ final class MenuBarController: NSObject {
             recreateStatusItem()
             return
         }
-        if button.image == nil || button.image?.size.width ?? 0 < 2 || button.title.isEmpty {
+        if button.image == nil || button.image?.size.width ?? 0 < 8 {
             applyStatusItemLabel()
         }
         if MenuBarAllowListMonitor.controlCenterMarkedHidden() {
